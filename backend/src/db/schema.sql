@@ -69,7 +69,12 @@ create table if not exists alerts (
   recipient text not null,
   message text not null,
   is_sent boolean not null default false,
-  sent_at timestamptz
+  sent_at timestamptz,
+  status text not null default 'pending',
+  kind text not null default 'down',
+  attempts integer not null default 0,
+  last_error text,
+  next_retry_at timestamptz
 );
 alter table alerts drop constraint if exists alerts_type_check;
 alter table alerts add constraint alerts_type_check check (type in ('email','slack','discord','webhook','telegram','teams','google_chat','pushover','gotify','mattermost','matrix','pagerduty','opsgenie','twilio_sms','jira','linear','github_issue','gitlab_issue','webpush'));
@@ -103,6 +108,7 @@ create table if not exists api_keys (
   user_id uuid not null references users(id) on delete cascade,
   key_hash text not null,
   label text not null,
+  scopes text[] not null default '{}',
   created_at timestamptz not null default now(),
   last_used_at timestamptz
 );
@@ -207,6 +213,8 @@ create table if not exists status_page_subscribers (
   status_page_id uuid not null references status_pages(id) on delete cascade,
   email text not null,
   verified boolean not null default false,
+  verified_at timestamptz,
+  expires_at timestamptz,
   token text,
   created_at timestamptz not null default now(),
   unique(status_page_id, email)
@@ -241,6 +249,14 @@ create table if not exists system_stats (
   network_in integer,
   network_out integer,
   recorded_at timestamptz not null default now()
+);
+
+create table if not exists heartbeat_runs (
+  id uuid primary key default uuid_generate_v4(),
+  agent_id uuid not null references agents(id) on delete cascade,
+  duration_ms integer,
+  exit_code integer,
+  created_at timestamptz not null default now()
 );
 
 create table if not exists logs (

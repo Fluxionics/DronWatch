@@ -1,9 +1,37 @@
 import cron from 'node-cron'
 import { supabase } from '../config/supabase'
 import { checkMonitor, getMonitorReport } from '../services/monitorService'
-import { sendReportEmail } from '../services/alertService'
+import { sendReportEmail, retryFailedAlerts } from '../services/alertService'
 import { rollupAndPrune } from '../services/retention'
 import { Monitor } from '../types'
+
+const MAX_CONCURRENT_CHECKS = Math.max(1, Number(process.env.CHECK_CONCURRENCY || 10))
+const BREAKER_FAILURES = Math.max(2, Number(process.env.CIRCUIT_BREAKER_FAILURES || 5))
+const BREAKER_COOLDOWN_MS = Math.max(60000, Number(process.env.CIRCUIT_BREAKER_COOLDOWN_MS || 300000))
+
+const circuit: Map<string, { failures: number; until: number }> = new Map()
+
+function circuitOpen(monitorId: string, now: number): boolean {
+  const c = circuit.get(monitorId)
+  if (!c) return false
+  if (c.until && now < c.until) return true
+  if (c.until && now >= c.until) circuit.delete(monitorId)
+  return false
+}
+
+function circuitRecord(monitorId: string, ok: boolean, now: number) {
+  if (ok) {
+    circuit.delete(monitorId)
+    return
+  }
+  const c = circuit.get(monitorId) ?? { failures: 0, until: 0 }
+  c.failures++
+  if (c.failures >= BREAKER_FAILURES) {
+    c.until = now + BREAKER_COOLDOWN_MS
+    console.warn(`Scheduler: circuit open for ${monitorId} after ${c.failures} consecutive check errors (cooldown ${Math.round(BREAKER_COOLDOWN_MS / 60000)}m)`)
+  }
+  circuit.set(monitorId, c)
+}
 
 async function claimDueMonitor(monitor: Monitor, now: number): Promise<boolean> {
   const intervalMs = Math.max(30, monitor.check_interval || 300) * 1000
@@ -45,16 +73,22 @@ export function startScheduler() {
 
     if (due.length > 0) {
       const sorted = due.sort((a, b) => (b.priority || 0) - (a.priority || 0))
-      await Promise.allSettled(
-        sorted.map(async monitor => {
-          if (!(await claimDueMonitor(monitor, now))) return
-          try {
-            await checkMonitor(monitor)
-          } catch (err) {
-            console.error(`Scheduler: check failed for ${monitor.id}`, err)
-          }
-        })
-      )
+      for (let i = 0; i < sorted.length; i += MAX_CONCURRENT_CHECKS) {
+        const batch = sorted.slice(i, i + MAX_CONCURRENT_CHECKS)
+        await Promise.allSettled(
+          batch.map(async monitor => {
+            if (circuitOpen(monitor.id, now)) return
+            if (!(await claimDueMonitor(monitor, now))) return
+            try {
+              await checkMonitor(monitor)
+              circuitRecord(monitor.id, true, Date.now())
+            } catch (err) {
+              console.error(`Scheduler: check failed for ${monitor.id}`, err)
+              circuitRecord(monitor.id, false, Date.now())
+            }
+          })
+        )
+      }
     }
   })
 
@@ -107,6 +141,15 @@ export function startScheduler() {
       await rollupAndPrune()
     } catch (err) {
       console.error('Retention rollup failed', err)
+    }
+  })
+
+  cron.schedule('* * * * *', async () => {
+    try {
+      const { retried, sent } = await retryFailedAlerts()
+      if (retried > 0) console.log(`Alert retry: ${sent}/${retried} delivered`)
+    } catch (err) {
+      console.error('Alert retry failed', err)
     }
   })
 

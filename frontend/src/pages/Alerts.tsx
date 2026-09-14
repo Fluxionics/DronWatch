@@ -3,8 +3,10 @@ import { formatDistanceToNow } from 'date-fns'
 import { useAlerts } from '../hooks/useAlerts'
 import { useMonitors } from '../hooks/useMonitors'
 import { useAlertRules, useCreateAlertRule, useUpdateAlertRule, useDeleteAlertRule } from '../hooks/useAlertRules'
-import { NotificationChannel } from '../types'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { NotificationChannel } from '../types'
+import api from '../utils/api'
+import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
 const typeColors: Record<string, string> = {
@@ -30,6 +32,8 @@ export default function Alerts() {
         <h1 className="text-xl font-bold text-surface-50">Alerts</h1>
         <p className="text-sm text-surface-500 mt-0.5">Every notification sent when a service went down or recovered</p>
       </div>
+
+      <TestChannelSection />
 
       <AlertRulesSection />
 
@@ -81,6 +85,49 @@ export default function Alerts() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+const channelTypes = ['email', 'slack', 'discord', 'webhook', 'telegram', 'teams', 'google_chat', 'pushover', 'gotify', 'mattermost', 'matrix', 'pagerduty', 'opsgenie', 'twilio_sms', 'jira', 'linear', 'github_issue', 'gitlab_issue', 'webpush']
+
+function TestChannelSection() {
+  const { data: monitors } = useMonitors()
+  const [monitorId, setMonitorId] = useState('')
+  const [type, setType] = useState('email')
+  const [recipient, setRecipient] = useState('')
+  const [sending, setSending] = useState(false)
+
+  const send = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSending(true)
+    try {
+      await api.post('/api/alerts/test', { monitor_id: monitorId, type, recipient })
+      toast.success('Test notification sent — check the channel')
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Test notification failed')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="card p-5">
+      <h2 className="text-sm font-semibold text-surface-200 uppercase tracking-wide mb-1">Test a channel</h2>
+      <p className="text-xs text-surface-500 mb-3">Send a real test notification through any channel to verify it works. It appears in history marked [TEST].</p>
+      <form onSubmit={send} className="grid sm:grid-cols-4 gap-3">
+        <select className="input" value={monitorId} onChange={e => setMonitorId(e.target.value)} required>
+          <option value="">Monitor…</option>
+          {(monitors || []).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+        <select className="input" value={type} onChange={e => setType(e.target.value)}>
+          {channelTypes.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input className="input font-mono text-xs" placeholder="recipient (email, webhook URL…)" value={recipient} onChange={e => setRecipient(e.target.value)} required />
+        <button type="submit" disabled={sending || !monitorId || !recipient} className="btn bg-brand-500 hover:bg-brand-400 text-white text-sm font-medium px-4 rounded-lg disabled:opacity-40">
+          {sending ? 'Sending…' : 'Send test'}
+        </button>
+      </form>
     </div>
   )
 }

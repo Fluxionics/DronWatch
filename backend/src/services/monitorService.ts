@@ -37,6 +37,15 @@ function percentile(arr: number[], p: number): number | null {
   return s[Math.max(0, idx)]
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(res => setTimeout(res, ms))
+}
+
+export function checkBackoff(attempt: number, baseMs = 1000, maxMs = 30000): number {
+  const exp = Math.min(baseMs * Math.pow(2, Math.max(0, attempt)), maxMs)
+  return Math.round(exp + Math.random() * 500)
+}
+
 function resolveVars(text: string, vars: Record<string, string>): string {
   if (!text) return text
   return text.replace(/\{\{([a-zA-Z0-9_.-]+)\}\}/g, (_, key) => vars[key] ?? '')
@@ -305,6 +314,7 @@ async function checkPingLogic(monitor: Monitor) {
   const cfg = monitor.config || {}
   const host = cfg.host || (() => { try { return new URL(monitor.url).hostname } catch { return monitor.url } })()
   const samples = cfg.samples || Math.max(monitor.retry_count || 1, 3)
+  const sampleTimeout = cfg.timeout || 15000
   const times: number[] = []
   let ok = 0
   if (cfg.allow_private_ips !== true) {
@@ -313,7 +323,7 @@ async function checkPingLogic(monitor: Monitor) {
   }
   for (let i = 0; i < samples; i++) {
     const s = Date.now()
-    try { await new Promise<void>((res, rej) => dns.lookup(host, { family: 0 }, e => (e ? rej(e) : res()))) } catch { times.push(5000); if (i === 0) break; continue }
+    try { await new Promise<void>((res, rej) => dns.lookup(host, { family: 0 }, e => (e ? rej(e) : res()))) } catch { times.push(sampleTimeout); if (i === 0) break; continue }
     ok++
     times.push(Date.now() - s)
   }
@@ -573,7 +583,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
 
   if (!isUp && monitor.retry_count > 1) {
     for (let i = 1; i < monitor.retry_count; i++) {
-      await new Promise(res => setTimeout(res, 1000 * i))
+      await sleep(checkBackoff(i - 1))
       const retry = type === 'ssl' ? await checkSslLogic(monitor) : type === 'domain' ? await checkDomainLogic(monitor) : type === 'dns' ? await checkDnsLogic(monitor) : type === 'tcp' ? await checkTcpLogic(monitor) : type === 'ping' ? await checkPingLogic(monitor) : type === 'heartbeat' ? await checkHeartbeatLogic(monitor) : Array.isArray(monitor.config?.steps) && monitor.config.steps.length > 0 ? await checkApiSteps(monitor, vars) : await checkHttpLogic(monitor, vars)
       if ((retry as any).isUp === true) { isUp = true; statusCode = (retry as any).status ?? statusCode; responseTime = (retry as any).responseTime ?? (retry as any).r?.totalTime ?? responseTime; errorMessage = null; break }
     }

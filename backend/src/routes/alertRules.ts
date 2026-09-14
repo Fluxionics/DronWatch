@@ -1,11 +1,11 @@
 import { Router, Response } from 'express'
 import { z } from 'zod'
 import { supabase } from '../config/supabase'
-import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
+import { requireAuth, forbidAgents, AuthenticatedRequest } from '../middleware/auth'
 import { validate } from '../middleware/validate'
 
 const router = Router()
-router.use(requireAuth)
+router.use(requireAuth, forbidAgents)
 
 const channelSchema = z.object({
   type: z.enum(['email','slack','discord','webhook','telegram','teams','google_chat','pushover','gotify','mattermost','matrix','pagerduty','opsgenie','twilio_sms','jira','linear','github_issue','gitlab_issue','webpush']),

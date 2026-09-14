@@ -1,7 +1,7 @@
 import { Router, Response } from 'express'
 import { createHash } from 'crypto'
 import { supabase } from '../config/supabase'
-import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
+import { requireAuth, forbidAgents, AuthenticatedRequest } from '../middleware/auth'
 
 const router = Router()
 
@@ -33,7 +33,7 @@ router.post('/ingest', async (req, res) => {
   res.status(201).json({ ok: true, ingested: rows.length })
 })
 
-router.use(requireAuth)
+router.use(requireAuth, forbidAgents)
 
 router.get('/search', async (req: AuthenticatedRequest, res: Response) => {
   const { q, level, service, monitor_id, limit } = req.query

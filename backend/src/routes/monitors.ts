@@ -1,7 +1,7 @@
 import { Router, Response } from 'express'
 import { z } from 'zod'
 import { supabase } from '../config/supabase'
-import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
+import { requireAuth, forbidAgents, AuthenticatedRequest } from '../middleware/auth'
 import { validate } from '../middleware/validate'
 import { checkMonitor, getMonitorStats, getDowntimeEvents, getMonitorReport, getMonitorRegions } from '../services/monitorService'
 import { safeEquals } from '../middleware/security'
@@ -29,7 +29,7 @@ const monitorSchema = z.object({
   notification_channels: z.array(channelSchema).max(15).default([])
 })
 
-router.use(requireAuth)
+router.use(requireAuth, forbidAgents)
 
 router.get('/', async (req: AuthenticatedRequest, res: Response) => {
   const { data, error } = await supabase
@@ -48,27 +48,57 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
   const since = new Date()
   since.setDate(since.getDate() - 90)
 
-  const { data: checks, error: checksError } = await supabase
-    .from('checks')
-    .select('monitor_id, is_up')
+  // 90d uptime from pre-aggregated daily buckets (cheap) instead of raw checks.
+  let uptimeByMonitor: Record<string, { up: number; total: number }> = {}
+  let seriesByMonitor: Record<string, boolean[]> = {}
+  const { data: buckets, error: bucketsError } = await supabase
+    .from('daily_stats')
+    .select('monitor_id, check_count, down_count')
     .in('monitor_id', ids)
-    .gte('checked_at', since.toISOString())
-    .order('checked_at', { ascending: false })
-
-  if (checksError) return res.status(500).json({ error: checksError.message })
-
-  const seriesByMonitor: Record<string, boolean[]> = {}
-  for (const check of checks ?? []) {
-    (seriesByMonitor[check.monitor_id] ??= []).push(check.is_up)
+    .gte('bucket', since.toISOString())
+  if (!bucketsError && buckets && buckets.length > 0) {
+    for (const b of buckets) {
+      const e = (uptimeByMonitor[b.monitor_id] ??= { up: 0, total: 0 })
+      e.total += b.check_count ?? 0
+      e.up += (b.check_count ?? 0) - (b.down_count ?? 0)
+    }
+    // Recent raw checks only for the sparkline series (bounded).
+    const { data: recent } = await supabase
+      .from('checks')
+      .select('monitor_id, is_up, checked_at')
+      .in('monitor_id', ids)
+      .order('checked_at', { ascending: false })
+      .limit(ids.length * 60)
+    for (const c of recent ?? []) {
+      (seriesByMonitor[c.monitor_id] ??= []).push(c.is_up)
+    }
+    for (const k of Object.keys(seriesByMonitor)) seriesByMonitor[k].reverse()
+  } else {
+    // Fresh installs / pre-rollup: bounded raw fallback.
+    const { data: checks, error: checksError } = await supabase
+      .from('checks')
+      .select('monitor_id, is_up')
+      .in('monitor_id', ids)
+      .gte('checked_at', since.toISOString())
+      .order('checked_at', { ascending: false })
+      .limit(ids.length * 2000)
+    if (checksError) return res.status(500).json({ error: checksError.message })
+    for (const check of checks ?? []) {
+      (seriesByMonitor[check.monitor_id] ??= []).push(check.is_up)
+    }
+    for (const m of monitors) {
+      const series = seriesByMonitor[m.id] ?? []
+      uptimeByMonitor[m.id] = { up: series.filter(v => v).length, total: series.length }
+    }
   }
 
   const enriched = monitors.map(m => {
+    const u = uptimeByMonitor[m.id]
     const series = seriesByMonitor[m.id] ?? []
-    const upCount = series.filter(v => v).length
     return {
       ...m,
-      uptime_90d: series.length > 0 ? Math.round((upCount / series.length) * 10000) / 100 : null,
-      uptime_series: series.slice().reverse()
+      uptime_90d: u && u.total > 0 ? Math.round((u.up / u.total) * 10000) / 100 : null,
+      uptime_series: series
     }
   })
 

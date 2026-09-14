@@ -54,13 +54,26 @@ Please follow these rules:
   traces.
 - SSRF guard in the monitor engine: HTTP, TCP, SSL and ping checks block private, loopback and
   link-local addresses by default (`allow_private_ips: true` in a monitor config opts out).
-  Heartbeat tokens are compared in constant time (SHA-256 + `timingSafeEqual`).
+  Every redirect hop re-validates the scheme (http/https only) and blocks the request if
+  **any** resolved IP is private. Heartbeat tokens are compared in constant time (SHA-256 + `timingSafeEqual`).
 - Row Level Security enabled on all tables (defense-in-depth against direct database access).
   The Node backend uses the service-role key, which bypasses RLS, so public API flows are
   unaffected. Direct `anon`/`authenticated` clients can never read other users' data.
 - HTML escaping of monitor/alert data in outgoing email templates.
 - Supported HTTPS deployment: set `TRUST_PROXY` in the server environment when running behind a
   reverse proxy so rate limits and IP-based lockout see real client IPs.
+- Three credential types with separated privileges: JWT sessions (full user access), API keys
+  (optional granular `resource:read` / `resource:write` scopes; empty scopes keep legacy full
+  access), and agent tokens (restricted to agent heartbeat endpoints; every other route
+  rejects them with 403). The `X-API-Key` header works standalone, without a Bearer token.
+- Incident tasks, updates and postmortems always verify incident ownership (`user_id`)
+  before any write — object IDs alone never grant access.
+- Status-page subscription tokens are single-use and expire 7 days after issue; re-subscribing
+  resets verification (double opt-in).
+- Password reset uses short-lived (1h) signed tokens sent only to the account email; the API
+  response never reveals whether an address exists.
+- Multi-instance safety: scheduled checks are claimed atomically in the database
+  (`last_check` compare-and-set), so N workers never execute the same check twice.
 
 ## Supported versions
 

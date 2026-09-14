@@ -1,9 +1,9 @@
 import { Router, Response } from 'express'
 import { supabase } from '../config/supabase'
-import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
+import { requireAuth, forbidAgents, AuthenticatedRequest } from '../middleware/auth'
 
 const router = Router()
-router.use(requireAuth)
+router.use(requireAuth, forbidAgents)
 
 router.get('/', async (req: AuthenticatedRequest, res: Response) => {
   const { status, severity, search } = req.query

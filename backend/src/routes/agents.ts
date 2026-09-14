@@ -1,7 +1,7 @@
 import { Router, Response } from 'express'
 import { createHash, randomBytes } from 'crypto'
 import { supabase } from '../config/supabase'
-import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
+import { requireAuth, forbidAgents, AuthenticatedRequest } from '../middleware/auth'
 import { assertResourceLimit } from '../services/plans'
 
 const router = Router()
@@ -13,7 +13,7 @@ async function getAgent(req: AuthenticatedRequest, res: Response, id: string) {
   return data
 }
 
-router.get('/', async (req: AuthenticatedRequest, res: Response) => {
+router.get('/', forbidAgents, async (req: AuthenticatedRequest, res: Response) => {
   const { data, error } = await supabase.from('agents').select('*').eq('user_id', req.user!.id).order('created_at', { ascending: false })
   if (error) return res.status(500).json({ error: error.message })
   const withStats = await Promise.all((data || []).map(async agent => {
@@ -23,7 +23,7 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
   res.json(withStats)
 })
 
-router.post('/', async (req: AuthenticatedRequest, res: Response) => {
+router.post('/', forbidAgents, async (req: AuthenticatedRequest, res: Response) => {
   const limit = await assertResourceLimit(req.user!.id, 'agents')
   if (!limit.ok) return res.status(402).json({ error: limit.error })
   const name = String(req.body?.name || '').trim().slice(0, 100)
@@ -35,7 +35,7 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
   res.status(201).json({ ...data, token })
 })
 
-router.get('/:id/script', async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id/script', forbidAgents, async (req: AuthenticatedRequest, res: Response) => {
   const agent = await getAgent(req, res, req.params.id)
   if (!agent) return
   const { data: user } = await supabase.from('users').select('username').eq('id', req.user!.id).single()
@@ -125,10 +125,35 @@ router.post('/:id/heartbeat', async (req: AuthenticatedRequest, res: Response) =
   }).select().single()
   if (error) return res.status(500).json({ error: error.message })
   await supabase.from('agents').update({ last_seen: new Date().toISOString(), platform: String(s.platform || agent.platform || '').slice(0, 100) }).eq('id', agent.id)
+  try {
+    await supabase.from('heartbeat_runs').insert({
+      agent_id: agent.id,
+      duration_ms: typeof s.duration_ms === 'number' && isFinite(s.duration_ms) ? Math.max(0, Math.min(s.duration_ms, 86400000)) : null,
+      exit_code: s.exit_code === undefined || s.exit_code === null ? null : Math.trunc(Number(s.exit_code))
+    })
+  } catch {
+    // heartbeat_runs table is optional (added by migration); stats insert above is authoritative.
+  }
   res.json({ ok: true, recorded_at: (data as any).recorded_at })
 })
 
-router.delete('/:id', async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id/heartbeats', forbidAgents, async (req: AuthenticatedRequest, res: Response) => {
+  const agent = await getAgent(req, res, req.params.id)
+  if (!agent) return
+  try {
+    const { data, error } = await supabase.from('heartbeat_runs')
+      .select('id, duration_ms, exit_code, created_at')
+      .eq('agent_id', agent.id)
+      .order('created_at', { ascending: false })
+      .limit(50)
+    if (error) throw new Error(error.message)
+    res.json(data)
+  } catch {
+    res.json([])
+  }
+})
+
+router.delete('/:id', forbidAgents, async (req: AuthenticatedRequest, res: Response) => {
   const { error } = await supabase.from('agents').delete().eq('id', req.params.id).eq('user_id', req.user!.id)
   if (error) return res.status(404).json({ error: 'Agent not found' })
   res.status(204).send()

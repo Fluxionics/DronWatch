@@ -3,14 +3,14 @@ import { z } from 'zod'
 import bcrypt from 'bcryptjs'
 import { createHash, randomBytes } from 'crypto'
 import { supabase } from '../config/supabase'
-import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
+import { requireAuth, forbidAgents, AuthenticatedRequest } from '../middleware/auth'
 import { validate } from '../middleware/validate'
 import { PASSWORD_POLICY } from './auth'
 import { PLAN_LIMITS, PLAN_NAMES } from '../services/plans'
 
 const router = Router()
 
-router.use(requireAuth)
+router.use(requireAuth, forbidAgents)
 
 const profileSchema = z.object({
   username: z.string().trim().min(2).max(30).regex(/^[a-zA-Z0-9_-]+$/, 'Only letters, numbers, underscores and dashes')
@@ -26,8 +26,11 @@ const envVarSchema = z.object({
   vars: z.record(z.string(), z.string().max(5000)).refine(vars => Object.keys(vars).length <= 50, 'Too many variables (max 50)').refine(vars => Object.keys(vars).every(k => envVarKey.test(String(k).trim())), 'Invalid variable key')
 })
 
+const SCOPE_RE = /^[a-z_]+:(read|write)$/
+
 const apiKeySchema = z.object({
-  label: z.string().trim().min(1).max(100)
+  label: z.string().trim().min(1).max(100),
+  scopes: z.array(z.string().trim().regex(SCOPE_RE, 'Scope must look like resource:read or resource:write')).max(30).default([])
 })
 
 const reportSchema = z.object({
@@ -120,18 +123,34 @@ router.delete('/', async (req: AuthenticatedRequest, res: Response) => {
 })
 
 router.get('/api-keys', async (req: AuthenticatedRequest, res: Response) => {
-  const { data, error } = await supabase
-    .from('api_keys')
-    .select('id, label, created_at, last_used_at')
-    .eq('user_id', req.user!.id)
-    .order('created_at', { ascending: false })
+  let data: any = null
+  let error: any = null
+  {
+    const r = await supabase
+      .from('api_keys')
+      .select('id, label, scopes, created_at, last_used_at')
+      .eq('user_id', req.user!.id)
+      .order('created_at', { ascending: false })
+    data = r.data
+    error = r.error
+  }
+
+  if (error && /scopes/i.test(error.message || '')) {
+    const retry = await supabase
+      .from('api_keys')
+      .select('id, label, created_at, last_used_at')
+      .eq('user_id', req.user!.id)
+      .order('created_at', { ascending: false })
+    data = retry.data
+    error = retry.error
+  }
 
   if (error) return res.status(500).json({ error: error.message })
   res.json(data)
 })
 
 router.post('/api-keys', validate(apiKeySchema), async (req: AuthenticatedRequest, res: Response) => {
-  const { label } = req.body
+  const { label, scopes } = req.body
 
   const { count } = await supabase
     .from('api_keys')
@@ -142,11 +161,23 @@ router.post('/api-keys', validate(apiKeySchema), async (req: AuthenticatedReques
   const key = `dw_${randomBytes(32).toString('hex')}`
   const key_hash = createHash('sha256').update(key).digest('hex')
 
-  const { data, error } = await supabase
+  const payload: any = { user_id: req.user!.id, key_hash, label }
+  if (scopes && scopes.length > 0) payload.scopes = scopes
+  let { data, error } = await supabase
     .from('api_keys')
-    .insert({ user_id: req.user!.id, key_hash, label })
+    .insert(payload)
     .select('id, label, created_at')
     .single()
+
+  if (error && /scopes/i.test(error.message || '')) {
+    const retry = await supabase
+      .from('api_keys')
+      .insert({ user_id: req.user!.id, key_hash, label })
+      .select('id, label, created_at')
+      .single()
+    data = retry.data
+    error = retry.error
+  }
 
   if (error) return res.status(500).json({ error: error.message })
   res.status(201).json({ ...data, key })

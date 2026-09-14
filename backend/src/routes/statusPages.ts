@@ -3,7 +3,7 @@ import { z } from 'zod'
 import bcrypt from 'bcryptjs'
 import { randomBytes } from 'crypto'
 import { supabase } from '../config/supabase'
-import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
+import { requireAuth, forbidAgents, AuthenticatedRequest } from '../middleware/auth'
 import { validate } from '../middleware/validate'
 import { authStrictLimiter } from '../middleware/security'
 import { assertResourceLimit } from '../services/plans'
@@ -67,14 +67,32 @@ router.post('/public/:slug/subscribe', authStrictLimiter, async (req: Request, r
   const { count } = await supabase.from('status_page_subscribers').select('id', { count: 'exact', head: true }).eq('status_page_id', page.id)
   if ((count ?? 0) >= 5000) return res.status(400).json({ error: 'Subscription limit reached' })
   const token = randomBytes(32).toString('hex')
-  const { error } = await supabase.from('status_page_subscribers').upsert({ status_page_id: page.id, email, token }, { onConflict: 'status_page_id,email' })
+  const expires_at = new Date(Date.now() + 7 * 86400000).toISOString()
+  let { error } = await supabase.from('status_page_subscribers').upsert({ status_page_id: page.id, email, token, verified: false, expires_at }, { onConflict: 'status_page_id,email' })
+  if (error && /expires_at|verified/i.test(error.message || '')) {
+    const retry = await supabase.from('status_page_subscribers').upsert({ status_page_id: page.id, email, token }, { onConflict: 'status_page_id,email' })
+    error = retry.error
+  }
   if (error) return res.status(500).json({ error: error.message })
   res.status(201).json({ ok: true, subscribed: email })
 })
 
 router.get('/public/:slug/verify', async (req: Request, res: Response) => {
-  await supabase.from('status_page_subscribers').update({ verified: true }).eq('token', String(req.query.token || ''))
-  res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/status/${req.params.slug}?verified=1`)
+  const base = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/status/${req.params.slug}`
+  const token = String(req.query.token || '')
+  if (!token) return res.redirect(`${base}?verified=0`)
+  const { data: sub } = await supabase.from('status_page_subscribers').select('id, expires_at').eq('token', token).maybeSingle()
+  if (!sub) return res.redirect(`${base}?verified=0`)
+  if (sub.expires_at && new Date(sub.expires_at).getTime() < Date.now()) {
+    return res.redirect(`${base}?verified=0`)
+  }
+  let { error } = await supabase.from('status_page_subscribers').update({ verified: true, verified_at: new Date().toISOString(), token: null }).eq('id', sub.id)
+  if (error && /verified_at/i.test(error.message || '')) {
+    const retry = await supabase.from('status_page_subscribers').update({ verified: true }).eq('id', sub.id)
+    error = retry.error
+  }
+  if (error) return res.redirect(`${base}?verified=0`)
+  res.redirect(`${base}?verified=1`)
 })
 
 router.get('/public/:slug/unsubscribe', async (req: Request, res: Response) => {
@@ -139,7 +157,7 @@ router.get('/domain/:domain', async (req: Request, res: Response) => {
   await buildPublicPayload(page, res, String(req.query.password || ''))
 })
 
-router.use(requireAuth)
+router.use(requireAuth, forbidAgents)
 
 router.get('/', async (req: AuthenticatedRequest, res: Response) => {
   const { data, error } = await supabase

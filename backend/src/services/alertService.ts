@@ -13,36 +13,104 @@ interface AlertPayload {
 }
 
 export async function sendAlert(payload: AlertPayload) {
-  const { data: alert } = await supabase.from('alerts').insert({
-    monitor_id: payload.monitorId, type: payload.type, recipient: payload.recipient, message: payload.message
-  }).select().single()
+  const rich = await supportsAlertStatus()
+  const { data: alert } = await supabase.from('alerts').insert(
+    rich
+      ? { monitor_id: payload.monitorId, type: payload.type, recipient: payload.recipient, message: payload.message, status: 'sending', attempts: 1, kind: payload.status }
+      : { monitor_id: payload.monitorId, type: payload.type, recipient: payload.recipient, message: payload.message }
+  ).select().single()
   try {
-    switch (payload.type) {
-      case 'email': await sendEmail(payload.recipient, payload.message, payload.status); break
-      case 'slack': await sendSlackMessage(payload.recipient, payload.message, payload.status); break
-      case 'discord': await sendDiscordMessage(payload.recipient, payload.message, payload.status); break
-      case 'webhook': await sendWebhook(payload.recipient, payload); break
-      case 'telegram': await sendTelegram(payload.recipient, payload.message, payload.status); break
-      case 'teams': await sendTeams(payload.recipient, payload.message, payload.status); break
-      case 'google_chat': await postJson(payload.recipient, { text: `${payload.status === 'down' ? 'DOWN' : 'RECOVERED'}: ${payload.message}` }); break
-      case 'pushover': await sendPushover(payload.recipient, payload.message, payload.status); break
-      case 'gotify': await sendGotify(payload.recipient, payload.message); break
-      case 'mattermost': await postJson(payload.recipient, { text: payload.message, username: 'DronWatch' }); break
-      case 'matrix': case 'webpush': await postJson(payload.recipient, { text: payload.message }); break
-      case 'pagerduty': await sendPagerDuty(payload.recipient, payload.message, payload.status); break
-      case 'opsgenie': await sendOpsgenie(payload.recipient, payload.message, payload.status); break
-      case 'twilio_sms': await sendTwilioSms(payload.recipient, payload.message); break
-      case 'jira': await sendIssue(payload.recipient, payload.message, 'jira'); break
-      case 'linear': await sendIssue(payload.recipient, payload.message, 'linear'); break
-      case 'github_issue': await sendIssue(payload.recipient, payload.message, 'github'); break
-      case 'gitlab_issue': await sendIssue(payload.recipient, payload.message, 'gitlab'); break
+    await deliver(payload)
+    if (alert) {
+      await supabase.from('alerts').update(
+        rich ? { status: 'sent', is_sent: true, sent_at: new Date().toISOString() } : { is_sent: true, sent_at: new Date().toISOString() }
+      ).eq('id', alert.id)
     }
-    if (alert) await supabase.from('alerts').update({ is_sent: true, sent_at: new Date().toISOString() }).eq('id', alert.id)
-  } catch (err) {
-    console.error(`Failed to send ${payload.type} alert:`, err)
-    await supabase.from('alerts').update({ is_sent: false }).eq('id', alert.id)
+  } catch (err: any) {
+    if (alert) await markAlertFailed(alert.id, err?.message || 'Delivery failed', rich)
     throw err
   }
+}
+
+export async function deliver(payload: AlertPayload) {
+  switch (payload.type) {
+    case 'email': await sendEmail(payload.recipient, payload.message, payload.status); break;
+    case 'slack': await sendSlackMessage(payload.recipient, payload.message, payload.status); break;
+    case 'discord': await sendDiscordMessage(payload.recipient, payload.message, payload.status); break;
+    case 'webhook': await sendWebhook(payload.recipient, payload); break;
+    case 'telegram': await sendTelegram(payload.recipient, payload.message, payload.status); break;
+    case 'teams': await sendTeams(payload.recipient, payload.message, payload.status); break;
+    case 'google_chat': await postJson(payload.recipient, { text: `${payload.status === 'down' ? 'DOWN' : 'RECOVERED'}: ${payload.message}` }); break;
+    case 'pushover': await sendPushover(payload.recipient, payload.message, payload.status); break;
+    case 'gotify': await sendGotify(payload.recipient, payload.message); break;
+    case 'mattermost': await postJson(payload.recipient, { text: payload.message, username: 'DronWatch' }); break;
+    case 'matrix': case 'webpush': await postJson(payload.recipient, { text: payload.message }); break;
+    case 'pagerduty': await sendPagerDuty(payload.recipient, payload.message, payload.status); break;
+    case 'opsgenie': await sendOpsgenie(payload.recipient, payload.message, payload.status); break;
+    case 'twilio_sms': await sendTwilioSms(payload.recipient, payload.message); break;
+    case 'jira': await sendIssue(payload.recipient, payload.message, 'jira'); break;
+    case 'linear': await sendIssue(payload.recipient, payload.message, 'linear'); break;
+    case 'github_issue': await sendIssue(payload.recipient, payload.message, 'github'); break;
+    case 'gitlab_issue': await sendIssue(payload.recipient, payload.message, 'gitlab'); break;
+    default: throw new Error(`Unsupported alert channel: ${payload.type}`);
+  }
+}
+
+let alertStatusSupport: boolean | null = null
+
+export async function supportsAlertStatus(): Promise<boolean> {
+  if (alertStatusSupport !== null) return alertStatusSupport
+  const { error } = await supabase.from('alerts').select('status').limit(1)
+  alertStatusSupport = !error
+  return alertStatusSupport
+}
+
+export function resetAlertStatusSupport() {
+  alertStatusSupport = null
+}
+
+async function markAlertFailed(id: string, message: string, rich: boolean) {
+  try {
+    if (!rich) {
+      await supabase.from('alerts').update({ is_sent: false }).eq('id', id)
+      return
+    }
+    const { data: row } = await supabase.from('alerts').select('attempts').eq('id', id).single()
+    const attempts = (row?.attempts ?? 0) + 1
+    const delayMs = Math.min(Math.pow(2, Math.min(attempts, 6)) * 60000, 3600000)
+    await supabase.from('alerts').update({
+      status: 'failed', is_sent: false, attempts,
+      last_error: String(message).slice(0, 500),
+      next_retry_at: new Date(Date.now() + delayMs).toISOString()
+    }).eq('id', id)
+  } catch (err) {
+    console.error(`Failed to mark alert ${id} as failed:`, err)
+  }
+}
+
+export async function retryFailedAlerts(limit = 25): Promise<{ retried: number; sent: number }> {
+  if (!(await supportsAlertStatus())) return { retried: 0, sent: 0 }
+  const { data: rows, error } = await supabase.from('alerts')
+    .select('id, monitor_id, type, recipient, message, kind, attempts')
+    .eq('status', 'failed')
+    .lt('attempts', 5)
+    .lte('next_retry_at', new Date().toISOString())
+    .order('next_retry_at', { ascending: true })
+    .limit(limit)
+  if (error || !rows || rows.length === 0) return { retried: 0, sent: 0 }
+  let sent = 0
+  for (const row of rows) {
+    const status = row.kind === 'recovered' ? 'recovered' : 'down'
+    try {
+      await supabase.from('alerts').update({ status: 'sending', attempts: (row.attempts ?? 0) + 1 }).eq('id', row.id)
+      await deliver({ monitorId: row.monitor_id, type: row.type, recipient: row.recipient, message: row.message, status })
+      await supabase.from('alerts').update({ status: 'sent', is_sent: true, sent_at: new Date().toISOString(), last_error: null, next_retry_at: null }).eq('id', row.id)
+      sent++
+    } catch (err: any) {
+      await markAlertFailed(row.id, err?.message || 'Delivery failed', true)
+    }
+  }
+  return { retried: rows.length, sent }
 }
 
 export function getMailer() {

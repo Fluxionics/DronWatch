@@ -1,9 +1,9 @@
 import { Router, Response } from 'express'
 import { supabase } from '../config/supabase'
-import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
+import { requireAuth, forbidAgents, AuthenticatedRequest } from '../middleware/auth'
 
 const router = Router()
-router.use(requireAuth)
+router.use(requireAuth, forbidAgents)
 
 router.get('/', async (req: AuthenticatedRequest, res: Response) => {
   const { data, error } = await supabase.from('maintenance_windows').select('*').eq('user_id', req.user!.id).order('starts_at', { ascending: false })
