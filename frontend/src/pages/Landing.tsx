@@ -14,6 +14,7 @@ export default function Landing() {
             <span className="font-semibold text-surface-50 tracking-tight">DronWatch</span>
           </div>
           <div className="flex items-center gap-3">
+            <Link to="/docs" className="btn-ghost text-sm">Docs</Link>
             <Link to="/auth" className="btn-ghost text-sm">Sign in</Link>
             <Link to="/auth?mode=register" className="btn-primary text-sm">Get started free</Link>
           </div>
@@ -40,6 +41,9 @@ export default function Landing() {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <Link to="/auth?mode=register" className="btn-primary text-base px-6 py-3">
               Start monitoring for free
+            </Link>
+            <Link to="/docs" className="btn-ghost text-base px-6 py-3">
+              Docs
             </Link>
             <a href="https://github.com/Fluxionics/DronWatch" target="_blank" rel="noopener noreferrer" className="btn-ghost text-base px-6 py-3">
               View on GitHub

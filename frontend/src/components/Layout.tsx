@@ -9,6 +9,7 @@ const navItems = [
   { to: '/dashboard/status-pages', label: 'Status Pages', icon: GlobeIcon },
   { to: '/dashboard/alerts', label: 'Alerts', icon: BellIcon },
   { to: '/dashboard/observability', label: 'Observability', icon: ServerIcon },
+  { to: '/docs', label: 'Docs', icon: BookIcon },
   { to: '/dashboard/settings', label: 'Settings', icon: SettingsIcon }
 ]
 
@@ -170,6 +171,15 @@ function ServerIcon() {
       <rect x="2" y="14" width="20" height="8" rx="2" />
       <line x1="6" y1="6" x2="6.01" y2="6" />
       <line x1="6" y1="18" x2="6.01" y2="18" />
+    </svg>
+  )
+}
+
+function BookIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
     </svg>
   )
 }
