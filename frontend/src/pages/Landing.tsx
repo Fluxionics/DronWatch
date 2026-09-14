@@ -41,7 +41,7 @@ export default function Landing() {
             <Link to="/auth?mode=register" className="btn-primary text-base px-6 py-3">
               Start monitoring for free
             </Link>
-            <a href="https://github.com" target="_blank" rel="noopener noreferrer" className="btn-ghost text-base px-6 py-3">
+            <a href="https://github.com/Fluxionics/DronWatch" target="_blank" rel="noopener noreferrer" className="btn-ghost text-base px-6 py-3">
               View on GitHub
             </a>
           </div>
@@ -141,7 +141,7 @@ export default function Landing() {
         <div className="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-surface-600">
           <span>DronWatch — Free, open-source uptime monitoring</span>
           <div className="flex gap-5">
-            <a href="https://github.com" target="_blank" rel="noopener noreferrer" className="hover:text-surface-400 transition-colors">GitHub</a>
+            <a href="https://github.com/Fluxionics/DronWatch" target="_blank" rel="noopener noreferrer" className="hover:text-surface-400 transition-colors">GitHub</a>
             <span>MIT License</span>
           </div>
         </div>
