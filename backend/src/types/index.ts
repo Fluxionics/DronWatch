@@ -31,6 +31,7 @@ export interface Monitor {
   consecutive_latency: number
   priority: number
   region: string
+  escalation_policy_id?: string | null
   notification_channels: NotificationChannel[]
   created_at: string
   updated_at: string
@@ -57,7 +58,7 @@ export interface Check {
   checked_at: string
 }
 
-export type AlertRuleCondition = 'down_for' | 'latency_above' | 'ssl_expires_within'
+export type AlertRuleCondition = 'down_for' | 'latency_above' | 'ssl_expires_within' | 'status_code' | 'keyword' | 'response_size_above' | 'error_rate_above'
 
 export interface AlertRule {
   id: string

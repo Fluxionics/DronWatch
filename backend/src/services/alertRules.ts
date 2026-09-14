@@ -18,8 +18,9 @@ export interface RuleOutcome {
   isUp: boolean
   responseTime: number | null
   intervalSeconds: number
-  extra?: { daysLeft: number | null }
+  extra?: { daysLeft?: number | null; outageType?: string | null; regions?: string[]; statusCode?: number | null; responseSize?: number | null; errorRate?: number | null; consecutiveDown?: number }
   silenced: boolean
+  statusCode?: number | null
 }
 
 interface RuleResult {
@@ -59,6 +60,49 @@ function evaluateRule(rule: RuleRow, outcome: RuleOutcome): RuleResult {
       if (days !== null && days !== undefined && days <= rule.threshold) {
         matched = true
         detail = `SSL certificate expires in ${days} days (threshold ${rule.threshold} days)`
+      }
+      break
+    }
+    case 'status_code': {
+      consecutive = outcome.statusCode === rule.threshold ? 0 : consecutive + 1
+      const durationMs = (rule.for_minutes || 0) * 60000
+      if (outcome.statusCode !== null && outcome.statusCode !== rule.threshold && consecutive * intervalMs >= durationMs) {
+        matched = true
+        detail = `Status ${outcome.statusCode} != expected ${rule.threshold} for ${Math.round((consecutive * intervalMs)/60000)}m`
+      }
+      if (outcome.statusCode === rule.threshold) consecutive = 0
+      break
+    }
+    case 'keyword': {
+      // keyword condition: threshold stores 1= must contain, 0= must not contain, keyword in rule name or extra?
+      // For now treat as down_for alias with detail
+      consecutive = outcome.isUp ? 0 : consecutive + 1
+      const durationMs = (rule.for_minutes || 0) * 60000
+      if (!outcome.isUp && consecutive * intervalMs >= durationMs) {
+        matched = true
+        detail = `Keyword/content check failed for ${Math.round((consecutive * intervalMs)/60000)}m`
+      }
+      break
+    }
+    case 'response_size_above': {
+      const size = outcome.extra?.responseSize ?? null
+      const over = size !== null && size > rule.threshold
+      consecutive = over ? consecutive + 1 : 0
+      const durationMs = (rule.for_minutes || 0) * 60000
+      if (over && consecutive * intervalMs >= durationMs) {
+        matched = true
+        detail = `Response size ${size} bytes > ${rule.threshold} for ${Math.round((consecutive * intervalMs)/60000)}m`
+      }
+      break
+    }
+    case 'error_rate_above': {
+      const rate = outcome.extra?.errorRate ?? (outcome.extra?.consecutiveDown ? (outcome.extra.consecutiveDown * 100 / Math.max(1, Math.ceil((rule.for_minutes||1)*60000/intervalMs))) : null)
+      const over = rate !== null && rate > rule.threshold
+      consecutive = over ? consecutive + 1 : 0
+      const durationMs = (rule.for_minutes || 0) * 60000
+      if (over && consecutive * intervalMs >= durationMs) {
+        matched = true
+        detail = `Error rate ${rate?.toFixed(1)}% > ${rule.threshold}%`
       }
       break
     }

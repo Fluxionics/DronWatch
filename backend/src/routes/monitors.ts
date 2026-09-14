@@ -26,10 +26,25 @@ const monitorSchema = z.object({
   maintenance: z.boolean().default(false),
   priority: z.number().int().min(0).max(3).default(0),
   region: z.string().trim().max(50).default('auto'),
+  escalation_policy_id: z.string().uuid().nullable().optional(),
   notification_channels: z.array(channelSchema).max(15).default([])
+}).superRefine((data, ctx) => {
+  const regions = (data.config as any)?.regions
+  if (regions !== undefined) {
+    if (!Array.isArray(regions)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'regions must be an array', path: ['config', 'regions'] })
+    else if (regions.length > 11) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'max 11 regions', path: ['config', 'regions'] })
+  }
+  const mode = (data.config as any)?.region_mode
+  if (mode !== undefined && !['quorum','all','any'].includes(mode)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'region_mode must be quorum, all or any', path: ['config', 'region_mode'] })
 })
 
 router.use(requireAuth, forbidAgents)
+
+router.get('/available-regions', async (_req: AuthenticatedRequest, res: Response) => {
+  const { data, error } = await supabase.from('regions').select('code,label,active').eq('active', true).order('code')
+  if (error) return res.status(500).json({ error: error.message })
+  res.json(data)
+})
 
 router.get('/', async (req: AuthenticatedRequest, res: Response) => {
   const { data, error } = await supabase

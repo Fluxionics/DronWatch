@@ -549,3 +549,26 @@ drop policy if exists rls_daily_stats_select on daily_stats for select to authen
 
 drop policy if exists rls_regions_select on regions;
 create policy rls_regions_select on regions for select to anon, authenticated using (true);
+
+-- Escalation policies (Smart Alerting)
+create table if not exists escalation_policies (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid not null references users(id) on delete cascade,
+  name text not null,
+  steps jsonb not null default '[]',
+  created_at timestamptz not null default now()
+);
+create table if not exists escalation_states (
+  id uuid primary key default uuid_generate_v4(),
+  monitor_id uuid not null references monitors(id) on delete cascade,
+  policy_id uuid not null references escalation_policies(id) on delete cascade,
+  user_id uuid not null references users(id) on delete cascade,
+  started_at timestamptz not null default now(),
+  current_step integer not null default 0,
+  last_notified_at timestamptz,
+  is_active boolean not null default true,
+  unique(monitor_id, policy_id)
+);
+alter table monitors add column if not exists escalation_policy_id uuid references escalation_policies(id) on delete set null;
+alter table alert_rules drop constraint if exists alert_rules_condition_check;
+alter table alert_rules add constraint alert_rules_condition_check check (condition in ('down_for','latency_above','ssl_expires_within','status_code','keyword','response_size_above','error_rate_above'));

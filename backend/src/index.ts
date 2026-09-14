@@ -14,6 +14,7 @@ import teamsRouter from './routes/teams'
 import logsRouter from './routes/logs'
 import agentsRouter from './routes/agents'
 import alertRulesRouter from './routes/alertRules'
+import escalationPoliciesRouter from './routes/escalationPolicies'
 import { startScheduler } from './jobs/scheduler'
 import { globalLimiter, authStrictLimiter, refreshLimiter, noStore, blockUnsafeMethods, validateOrigin } from './middleware/security'
 import { getAllowedOrigins } from './services/origins'
@@ -100,6 +101,7 @@ app.use('/api/teams', teamsRouter)
 app.use('/api/logs', logsRouter)
 app.use('/api/agents', agentsRouter)
 app.use('/api/alert-rules', alertRulesRouter)
+app.use('/api/escalation-policies', escalationPoliciesRouter)
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' })

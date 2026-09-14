@@ -9,6 +9,7 @@ import { supabase } from '../config/supabase'
 import { Monitor, Check } from '../types'
 import { sendAlert, sendSubscriberEmail } from './alertService'
 import { evaluateAlertRules } from './alertRules'
+import { startEscalation, stopEscalation } from './escalationService'
 import { rolledSeries, bucketedUptime, RETENTION } from './retention'
 
 interface RawResult {
@@ -549,6 +550,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
   let tlsTime: number | null = null
   let ttfb: number | null = null
   let responseTime: number | null = null
+  let responseSize: number | null = null
   let daysLeft: number | null = null
   const cfg = monitor.config || {}
 
@@ -571,6 +573,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
     } else {
       const r = await checkHttpLogic(monitor, vars); isUp = r.isUp; statusCode = r.status; responseTime = r.r.totalTime; errorMessage = r.error
       dnsTime = r.r.dnsTime; tcpTime = r.r.tcpTime; tlsTime = r.r.tlsTime; ttfb = r.r.ttfb
+      try { responseSize = r.r.body ? Buffer.byteLength(r.r.body, 'utf8') : null } catch { responseSize = r.r.body ? r.r.body.length : null }
     }
   }
 
@@ -589,48 +592,129 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
     }
   }
 
-  const check = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft })
+  // Multi-region handling: replicate or quorum
+  const targetRegions: string[] = Array.isArray(cfg.regions) && cfg.regions.length > 0 ? cfg.regions : [checkRegion()]
+  const workerRegion = checkRegion()
+  const isDistributedWorker = workerRegion !== 'self'
+  const regionMode: string = cfg.region_mode || 'quorum'
+
+  // Distributed worker: skip if this monitor doesn't want our region (and has explicit regions)
+  if (isDistributedWorker && Array.isArray(cfg.regions) && cfg.regions.length > 0 && !cfg.regions.includes(workerRegion)) {
+    // Not our region – don't record, but still return a synthetic check for scheduler bookkeeping
+    return { id: `skip-${monitor.id}-${Date.now()}`, monitor_id: monitor.id, status_code: statusCode, response_time: responseTime, is_up: isUp, error_message: errorMessage, region: workerRegion, checked_at: new Date().toISOString() } as unknown as Check
+  }
+
+  let checks: Check[] = []
+  let overallUp = isUp
+  let outageType: 'none' | 'regional' | 'global' = 'none'
+
+  if (targetRegions.length > 1 && !isDistributedWorker) {
+    // Single host simulation: replicate the single probe result to each region
+    const perRegionResults: Array<{ region: string; isUp: boolean }> = []
+    for (const r of targetRegions) {
+      const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, outage_hint: r }, r)
+      checks.push(c)
+      perRegionResults.push({ region: r, isUp })
+    }
+    const quorum = evaluateQuorum(perRegionResults, regionMode)
+    overallUp = quorum.overallUp
+    outageType = quorum.outageType
+  } else if (isDistributedWorker) {
+    // Distributed: store single region check, then evaluate quorum from recent per-region checks
+    const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft }, workerRegion)
+    checks.push(c)
+    // Fetch latest per-region status within 2 intervals to compute quorum
+    try {
+      const windowMs = Math.max(60, monitor.check_interval) * 2000
+      const since = new Date(Date.now() - windowMs).toISOString()
+      const { data: recent } = await supabase.from('checks').select('region,is_up,checked_at').eq('monitor_id', monitor.id).in('region', targetRegions).gte('checked_at', since).order('checked_at', { ascending: false }).limit(targetRegions.length * 5)
+      const latestByRegion = new Map<string, boolean>()
+      // Current result takes precedence for our region
+      latestByRegion.set(workerRegion, isUp)
+      for (const row of recent || []) {
+        if (!latestByRegion.has(row.region)) latestByRegion.set(row.region, row.is_up)
+      }
+      const perRegionResults = targetRegions.map(r => ({ region: r, isUp: latestByRegion.get(r) ?? true }))
+      const quorum = evaluateQuorum(perRegionResults, regionMode)
+      overallUp = quorum.overallUp
+      outageType = quorum.outageType
+    } catch {
+      overallUp = isUp
+    }
+  } else {
+    const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft })
+    checks.push(c)
+    overallUp = isUp
+  }
+
+  const check = checks[0] || await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft })
 
   const prev = monitor.last_status
   const now = new Date().toISOString()
 
   const latencyThreshold = cfg.latency_threshold || 1000
-  const nextConsecutiveDown = isUp ? 0 : (monitor.consecutive_down || 0) + 1
-  const nextConsecutiveLatency = isUp && responseTime !== null && responseTime !== undefined && responseTime > latencyThreshold ? (monitor.consecutive_latency || 0) + 1 : 0
-  await supabase.from('monitors').update({ last_check: now, last_status: isUp, last_latency: responseTime, consecutive_down: nextConsecutiveDown, consecutive_latency: nextConsecutiveLatency }).eq('id', monitor.id)
+  const nextConsecutiveDown = overallUp ? 0 : (monitor.consecutive_down || 0) + 1
+  const nextConsecutiveLatency = overallUp && responseTime !== null && responseTime !== undefined && responseTime > latencyThreshold ? (monitor.consecutive_latency || 0) + 1 : 0
+  await supabase.from('monitors').update({ last_check: now, last_status: overallUp, last_latency: responseTime, consecutive_down: nextConsecutiveDown, consecutive_latency: nextConsecutiveLatency }).eq('id', monitor.id)
 
   const { data: silence } = await supabase.from('silences').select('id').eq('user_id', monitor.user_id)
     .or(`monitor_id.eq.${monitor.id},monitor_id.is.null`).gte('ends_at', now).limit(1).maybeSingle()
   const isSilenced = !!silence
 
-  await evaluateAlertRules(monitor.id, monitor, { isUp, responseTime, intervalSeconds: monitor.check_interval, extra: { daysLeft }, silenced: isSilenced })
+  // Enrich alert detail with outage type
+  let alertDetailExtra = ''
+  if (targetRegions.length > 1 && outageType !== 'none') {
+    alertDetailExtra = outageType === 'global' ? ' [GLOBAL OUTAGE]' : ' [REGIONAL OUTAGE]'
+  }
 
-  const changed = prev !== null && prev !== isUp
+  await evaluateAlertRules(monitor.id, monitor, { isUp: overallUp, responseTime, intervalSeconds: monitor.check_interval, statusCode, extra: { daysLeft, outageType, regions: targetRegions, responseSize, consecutiveDown: nextConsecutiveDown, errorRate: targetRegions.length > 1 ? (checks.filter(c => !c.is_up).length * 100 / Math.max(1, checks.length)) : (nextConsecutiveDown > 0 ? 100 : 0) }, silenced: isSilenced })
+
+  const changed = prev !== null && prev !== overallUp
   if (changed && !isSilenced) {
-    await handleStatusChange(monitor, isUp, statusCode, errorMessage)
+    await handleStatusChange(monitor, overallUp, statusCode, (errorMessage || '') + alertDetailExtra)
   }
-  if (changed || (prev === isUp && !isUp)) {
-    await handleIncident(monitor, isUp)
+  if (changed || (prev === overallUp && !overallUp)) {
+    await handleIncident(monitor, overallUp)
   }
-  if (!isUp && prev === false && cfg.repeat_minutes && !isSilenced) {
+  if (!overallUp && prev === false && cfg.repeat_minutes && !isSilenced) {
     const last = lastAlertAt.get(monitor.id) ?? 0
     if (Date.now() - last >= cfg.repeat_minutes * 60000) {
       lastAlertAt.set(monitor.id, Date.now())
-      await handleStatusChange(monitor, false, statusCode, errorMessage)
+      await handleStatusChange(monitor, false, statusCode, (errorMessage || '') + alertDetailExtra)
     }
   }
   if (changed && isSilenced) lastAlertAt.set(monitor.id, Date.now())
+  if (!overallUp) {
+    try { await startEscalation({ id: monitor.id, user_id: monitor.user_id, escalation_policy_id: (monitor as any).escalation_policy_id, name: monitor.name, url: monitor.url }) } catch {}
+  } else {
+    try { await stopEscalation(monitor.id) } catch {}
+  }
   return check
 }
 
-async function recordCheck(monitor: Monitor, statusCode: number | null, responseTime: number | null, errorMessage: string | null, isUp: boolean, additive: boolean, timing?: { dnsTime?: number | null; tcpTime?: number | null; tlsTime?: number | null; ttfb?: number | null }, extra?: Record<string, any>): Promise<Check> {
+async function recordCheck(monitor: Monitor, statusCode: number | null, responseTime: number | null, errorMessage: string | null, isUp: boolean, additive: boolean, timing?: { dnsTime?: number | null; tcpTime?: number | null; tlsTime?: number | null; ttfb?: number | null }, extra?: Record<string, any>, regionOverride?: string): Promise<Check> {
   const { data: check, error } = await supabase.from('checks').insert({
     monitor_id: monitor.id, status_code: statusCode, response_time: responseTime,
     dns_time: timing?.dnsTime ?? null, tcp_time: timing?.tcpTime ?? null, tls_time: timing?.tlsTime ?? null, ttfb: timing?.ttfb ?? null,
-    is_up: isUp, error_message: errorMessage, region: checkRegion(), extra: extra || null
+    is_up: isUp, error_message: errorMessage, region: regionOverride || checkRegion(), extra: extra || null
   }).select().single()
   if (error) throw new Error(`Failed to save check: ${error.message}`)
   return check as Check
+}
+
+function evaluateQuorum(results: Array<{ region: string; isUp: boolean }>, mode: string): { overallUp: boolean; outageType: 'none' | 'regional' | 'global' } {
+  if (results.length === 0) return { overallUp: true, outageType: 'none' }
+  if (results.length === 1) return { overallUp: results[0].isUp, outageType: results[0].isUp ? 'none' : 'global' }
+  const upCount = results.filter(r => r.isUp).length
+  const downCount = results.length - upCount
+  let overallUp: boolean
+  if (mode === 'all') overallUp = upCount === results.length
+  else if (mode === 'any') overallUp = upCount > 0
+  else overallUp = upCount > downCount // quorum / majority default
+  let outageType: 'none' | 'regional' | 'global' = 'none'
+  if (!overallUp) outageType = downCount === results.length ? 'global' : 'regional'
+  else if (downCount > 0) outageType = 'regional'
+  return { overallUp, outageType }
 }
 
 async function handleIncident(monitor: Monitor, isUp: boolean) {

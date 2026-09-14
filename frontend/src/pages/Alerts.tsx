@@ -8,6 +8,7 @@ import { NotificationChannel } from '../types'
 import api from '../utils/api'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
+import { useEscalationPolicies, useCreateEscalationPolicy, useDeleteEscalationPolicy } from '../hooks/useEscalationPolicies'
 
 const typeColors: Record<string, string> = {
   email: 'text-brand-400 border-brand-500/40 bg-brand-500/10',
@@ -19,7 +20,11 @@ const typeColors: Record<string, string> = {
 const conditions = [
   { value: 'down_for', label: 'Down for' },
   { value: 'latency_above', label: 'Latency above (ms)' },
-  { value: 'ssl_expires_within', label: 'SSL expires within (days)' }
+  { value: 'ssl_expires_within', label: 'SSL expires within (days)' },
+  { value: 'status_code', label: 'Status code !=' },
+  { value: 'keyword', label: 'Keyword/content failed' },
+  { value: 'response_size_above', label: 'Response size above (bytes)' },
+  { value: 'error_rate_above', label: 'Error rate above (%)' }
 ]
 
 export default function Alerts() {
@@ -34,6 +39,8 @@ export default function Alerts() {
       </div>
 
       <TestChannelSection />
+
+      <EscalationPoliciesSection />
 
       <AlertRulesSection />
 
@@ -294,7 +301,15 @@ function RuleRow({ rule }: { rule: any }) {
     ? `Down for ${rule.threshold} min`
     : rule.condition === 'latency_above'
       ? `Latency above ${rule.threshold}ms`
-      : `SSL renews within ${rule.threshold} days`
+      : rule.condition === 'status_code'
+        ? `Status != ${rule.threshold}`
+        : rule.condition === 'keyword'
+          ? `Content check failed`
+          : rule.condition === 'response_size_above'
+            ? `Size > ${rule.threshold} bytes`
+            : rule.condition === 'error_rate_above'
+              ? `Error rate > ${rule.threshold}%`
+              : `SSL renews within ${rule.threshold} days`
 
   return (
     <li className="flex items-center gap-4 px-5 py-3">
@@ -328,6 +343,83 @@ function RuleRow({ rule }: { rule: any }) {
         Delete
       </button>
     </li>
+  )
+}
+
+function EscalationPoliciesSection() {
+  const { data: policies, isLoading } = useEscalationPolicies()
+  const create = useCreateEscalationPolicy()
+  const remove = useDeleteEscalationPolicy()
+  const [name, setName] = useState('')
+  const [steps, setSteps] = useState<Array<{ delay_minutes: string; channels: string }>>([{ delay_minutes: '0', channels: '' }])
+
+  const canSubmit = name.trim() && steps.every(s => s.channels.trim())
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
+    const parsed = steps.map(s => ({
+      delay_minutes: Number(s.delay_minutes) || 0,
+      channels: s.channels.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+        const idx = l.indexOf(':')
+        return idx === -1 ? { type: 'email', target: l } : { type: l.slice(0, idx).trim(), target: l.slice(idx + 1).trim() }
+      }).filter(c => c.target) as any
+    })).filter(s => s.channels.length > 0)
+    if (parsed.length === 0) return
+    create.mutate({ name, steps: parsed })
+    setName('')
+    setSteps([{ delay_minutes: '0', channels: '' }])
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold text-surface-200 uppercase tracking-wide mb-3">Escalation policies</h2>
+        <div className="card p-5">
+          <form onSubmit={submit} className="space-y-3">
+            <div>
+              <label className="label">Policy name</label>
+              <input className="input" placeholder="e.g. PagerDuty chain" value={name} onChange={e => setName(e.target.value)} />
+            </div>
+            {steps.map((st, i) => (
+              <div key={i} className="grid sm:grid-cols-3 gap-3 rounded-lg border border-surface-800 p-3">
+                <div>
+                  <label className="label">Step {i + 1} – delay (minutes)</label>
+                  <input className="input" type="number" min={0} value={st.delay_minutes} onChange={e => { const a = [...steps]; a[i].delay_minutes = e.target.value; setSteps(a) }} />
+                  <p className="text-xs text-surface-600 mt-1">{i === 0 ? 'Fires immediately on DOWN' : `Fires ${st.delay_minutes}m after still DOWN`}</p>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="label">Channels (one per line: type:target)</label>
+                  <textarea className="input font-mono text-xs" rows={2} placeholder={'email:oncall@example.com\ndiscord:https://discord.com/api/webhooks/...'} value={st.channels} onChange={e => { const a = [...steps]; a[i].channels = e.target.value; setSteps(a) }} />
+                </div>
+                <div className="sm:col-span-3 flex justify-end">
+                  <button type="button" className="btn-ghost text-xs" onClick={() => setSteps(steps.filter((_, x) => x !== i))} disabled={steps.length === 1}>Remove step</button>
+                </div>
+              </div>
+            ))}
+            <div className="flex gap-2">
+              <button type="button" className="btn-ghost text-xs" onClick={() => setSteps([...steps, { delay_minutes: '5', channels: '' }])}>+ Add step</button>
+              <button type="submit" disabled={!canSubmit || create.isPending} className="btn bg-brand-500 hover:bg-brand-400 text-white text-sm font-medium px-4 rounded-lg disabled:opacity-40 ml-auto">{create.isPending ? 'Saving…' : 'Create policy'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+      {isLoading ? <div className="card animate-pulse h-12 bg-surface-800" /> : !policies || policies.length === 0 ? <p className="text-sm text-surface-600">No escalation policies yet.</p> : (
+        <div className="card overflow-hidden p-0">
+          <ul className="divide-y divide-surface-800">
+            {policies.map(p => (
+              <li key={p.id} className="flex items-center gap-4 px-5 py-3">
+                <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-surface-100">{p.name}</p>
+                  <p className="text-xs text-surface-600">{p.steps.map((s: any, i: number) => `Step ${i + 1} @${s.delay_minutes}m → ${(s.channels || []).map((c: any) => c.type).join(',')}`).join(' · ')}</p>
+                </div>
+                <button onClick={() => { if (confirm(`Delete policy "${p.name}"? Monitors using it will fall back to immediate channels.`)) remove.mutate(p.id) }} className="btn-ghost text-xs shrink-0">Delete</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   )
 }
 

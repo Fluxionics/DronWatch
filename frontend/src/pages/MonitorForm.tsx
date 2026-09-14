@@ -3,6 +3,9 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useMonitor, useCreateMonitor, useUpdateMonitor, useTestMonitor, useMonitors } from '../hooks/useMonitors'
 import NotificationChannelPicker from '../components/NotificationChannelPicker'
 import { NotificationChannel, MonitorType } from '../types'
+import { useQuery } from '@tanstack/react-query'
+import api from '../utils/api'
+import { useEscalationPolicies } from '../hooks/useEscalationPolicies'
 
 const INTERVALS = [
   { label: '30 seconds', value: 30 },
@@ -47,6 +50,7 @@ export default function MonitorForm() {
     check_interval: 300,
     retry_count: 1,
     parent_monitor_id: null as string | null,
+    escalation_policy_id: null as string | null,
     notification_channels: [] as NotificationChannel[]
   })
   const [open, setOpen] = useState<Section | null>(null)
@@ -62,6 +66,7 @@ export default function MonitorForm() {
         check_interval: existing.check_interval,
         retry_count: existing.retry_count || 1,
         parent_monitor_id: existing.parent_monitor_id || null,
+        escalation_policy_id: (existing as any).escalation_policy_id || null,
         notification_channels: existing.notification_channels
       })
     }
@@ -93,6 +98,16 @@ export default function MonitorForm() {
   const isPending = create.isPending || update.isPending
   const cfg = form.config
   const toggle = (s: Section) => setOpen(open === s ? null : s)
+
+  const { data: availableRegions } = useQuery({
+    queryKey: ['available-regions'],
+    queryFn: async () => {
+      const { data } = await api.get('/api/monitors/available-regions')
+      return data as Array<{ code: string; label: string }>
+    },
+    staleTime: 5 * 60 * 1000
+  })
+  const { data: escalationPolicies } = useEscalationPolicies()
 
   const HeadersEditor = (
     <div className="space-y-2">
@@ -364,6 +379,47 @@ export default function MonitorForm() {
             <option value="">None</option>
             {(allMonitors || []).filter(m => m.id !== id).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
+        </div>
+
+        <div>
+          <label className="label">Multi-region probes</label>
+          <p className="text-xs text-surface-500 mb-2">Select where to probe from. Single host replicates the result per region for history; with workers deployed per <code className="font-mono">REGION</code> it becomes truly geo-distributed.</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {(availableRegions || []).map(r => {
+              const checked = (cfg.regions || []).includes(r.code)
+              return (
+                <label key={r.code} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${checked ? 'border-brand-500 bg-brand-500/10 text-brand-300' : 'border-surface-800 bg-surface-900 text-surface-300 hover:border-surface-700'}`}>
+                  <input type="checkbox" checked={checked} onChange={e => {
+                    const cur = new Set<string>(cfg.regions || [])
+                    if (e.target.checked) cur.add(r.code); else cur.delete(r.code)
+                    setCfg({ regions: Array.from(cur) })
+                  }} className="accent-brand-500" />
+                  <span className="font-mono text-xs">{r.code}</span>
+                  <span className="truncate text-xs">{r.label}</span>
+                </label>
+              )
+            })}
+          </div>
+          {(cfg.regions || []).length > 1 && (
+            <div className="mt-3 max-w-xs">
+              <label className="label">Quorum mode</label>
+              <select className="input" value={cfg.region_mode || 'quorum'} onChange={e => setCfg({ region_mode: e.target.value })}>
+                <option value="quorum">Quorum — majority up → overall UP</option>
+                <option value="all">All — every region must be up</option>
+                <option value="any">Any — at least one region up → overall UP</option>
+              </select>
+              <p className="text-xs text-surface-600 mt-1">Determines when a partial outage counts as DOWN and triggers alerts/incidents.</p>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label className="label">Escalation policy</label>
+          <select className="input" value={form.escalation_policy_id || ''} onChange={e => setForm(f => ({ ...f, escalation_policy_id: e.target.value || null }))}>
+            <option value="">No escalation — use immediate channels only</option>
+            {(escalationPolicies || []).map(p => <option key={p.id} value={p.id}>{p.name} ({p.steps.length} steps)</option>)}
+          </select>
+          <p className="text-xs text-surface-600 mt-1">If set, DOWN will fire step 0 immediately and later steps after their delays while still down.</p>
         </div>
 
         <div>

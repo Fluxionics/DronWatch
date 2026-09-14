@@ -32,6 +32,7 @@ export interface Monitor {
   last_check: string | null
   last_status: boolean | null
   last_latency: number | null
+  escalation_policy_id?: string | null
   notification_channels: NotificationChannel[]
   uptime_90d?: number | null
   uptime_series?: boolean[]
@@ -182,7 +183,7 @@ export interface UserStats {
   alerts_this_month: number
 }
 
-export type AlertRuleCondition = 'down_for' | 'latency_above' | 'ssl_expires_within'
+export type AlertRuleCondition = 'down_for' | 'latency_above' | 'ssl_expires_within' | 'status_code' | 'keyword' | 'response_size_above' | 'error_rate_above'
 
 export interface AlertRule {
   id: string
@@ -208,4 +209,11 @@ export interface MonitorRegion {
   last_check: string | null
   last_latency: number | null
   uptime_24h: number | null
+}
+
+export interface EscalationPolicy {
+  id: string
+  name: string
+  steps: Array<{ delay_minutes: number; channels: NotificationChannel[] }>
+  created_at: string
 }

@@ -3,6 +3,7 @@ import { supabase } from '../config/supabase'
 import { checkMonitor, getMonitorReport } from '../services/monitorService'
 import { sendReportEmail, retryFailedAlerts } from '../services/alertService'
 import { rollupAndPrune } from '../services/retention'
+import { processEscalations } from '../services/escalationService'
 import { Monitor } from '../types'
 
 const MAX_CONCURRENT_CHECKS = Math.max(1, Number(process.env.CHECK_CONCURRENCY || 10))
@@ -150,6 +151,11 @@ export function startScheduler() {
       if (retried > 0) console.log(`Alert retry: ${sent}/${retried} delivered`)
     } catch (err) {
       console.error('Alert retry failed', err)
+    }
+    try {
+      await processEscalations()
+    } catch (err) {
+      console.error('Escalation process failed', err)
     }
   })
 
