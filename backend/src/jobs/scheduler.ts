@@ -1,11 +1,26 @@
 import cron from 'node-cron'
 import { supabase } from '../config/supabase'
 import { checkMonitor, getMonitorReport } from '../services/monitorService'
-import { sendEmail } from '../services/alertService'
+import { sendReportEmail } from '../services/alertService'
 import { rollupAndPrune } from '../services/retention'
 import { Monitor } from '../types'
 
-const lastCheckedAt: Map<string, number> = new Map()
+async function claimDueMonitor(monitor: Monitor, now: number): Promise<boolean> {
+  const intervalMs = Math.max(30, monitor.check_interval || 300) * 1000
+  const cutoff = new Date(now - intervalMs).toISOString()
+  const { data, error } = await supabase
+    .from('monitors')
+    .update({ last_check: new Date(now).toISOString() })
+    .eq('id', monitor.id)
+    .or(`last_check.is.null,last_check.lt.${cutoff}`)
+    .select('id')
+    .maybeSingle()
+  if (error) {
+    console.error(`Scheduler: claim failed for ${monitor.id}`, error)
+    return false
+  }
+  return !!data
+}
 
 export function startScheduler() {
   cron.schedule('*/30 * * * * *', async () => {
@@ -23,8 +38,8 @@ export function startScheduler() {
     }
 
     const due = (monitors as Monitor[]).sort((a, b) => (b.priority || 0) - (a.priority || 0)).filter(monitor => {
-      const last = lastCheckedAt.get(monitor.id) ?? 0
-      const intervalMs = monitor.check_interval * 1000
+      const intervalMs = Math.max(30, monitor.check_interval || 300) * 1000
+      const last = monitor.last_check ? new Date(monitor.last_check).getTime() : 0
       return now - last >= intervalMs
     })
 
@@ -32,7 +47,7 @@ export function startScheduler() {
       const sorted = due.sort((a, b) => (b.priority || 0) - (a.priority || 0))
       await Promise.allSettled(
         sorted.map(async monitor => {
-          lastCheckedAt.set(monitor.id, now)
+          if (!(await claimDueMonitor(monitor, now))) return
           try {
             await checkMonitor(monitor)
           } catch (err) {
@@ -54,7 +69,7 @@ export function startScheduler() {
           parts.push({ name: m.name, url: m.url, report })
         }
         const html = buildReportHtml(parts)
-        await sendEmail(s.email, `DronWatch ${s.frequency} report`, 'recovered')
+        await sendReportEmail(s.email, `DronWatch ${s.frequency} report`, html)
       } catch (err) {
         console.error('Report email failed', err)
       } finally {
@@ -95,7 +110,7 @@ export function startScheduler() {
     }
   })
 
-  console.log('Scheduler started (30s checks, hourly reports, minute log-pattern scan, 10min retention rollups)')
+  console.log('Scheduler started (30s DB-claimed checks, hourly reports, minute log-pattern scan, 10min retention rollups)')
 }
 
 const lastAlertCheck: Map<string, number> = new Map()

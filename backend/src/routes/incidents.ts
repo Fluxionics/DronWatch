@@ -72,11 +72,18 @@ router.post('/:id/update', async (req: AuthenticatedRequest, res: Response) => {
 router.post('/:id/tasks', async (req: AuthenticatedRequest, res: Response) => {
   const { title } = req.body
   if (!title) return res.status(400).json({ error: 'title required' })
+  const { data: inc } = await supabase.from('incidents').select('id').eq('id', req.params.id).eq('user_id', req.user!.id).single()
+  if (!inc) return res.status(404).json({ error: 'Incident not found' })
   const { data } = await supabase.from('incident_tasks').insert({ incident_id: req.params.id, title }).select().single()
   res.status(201).json(data)
 })
 
 router.patch('/tasks/:taskId', async (req: AuthenticatedRequest, res: Response) => {
+  if (typeof req.body.done !== 'boolean') return res.status(400).json({ error: 'done must be a boolean' })
+  const { data: task } = await supabase.from('incident_tasks').select('id, incident_id').eq('id', req.params.taskId).single()
+  if (!task) return res.status(404).json({ error: 'Task not found' })
+  const { data: inc } = await supabase.from('incidents').select('id').eq('id', task.incident_id).eq('user_id', req.user!.id).single()
+  if (!inc) return res.status(404).json({ error: 'Task not found' })
   const { data, error } = await supabase.from('incident_tasks').update({ done: req.body.done }).eq('id', req.params.taskId).select().single()
   if (error || !data) return res.status(404).json({ error: 'Task not found' })
   res.json(data)
@@ -84,6 +91,8 @@ router.patch('/tasks/:taskId', async (req: AuthenticatedRequest, res: Response) 
 
 router.post('/:id/postmortem', async (req: AuthenticatedRequest, res: Response) => {
   const { root_cause, timeline, actions } = req.body
+  const { data: inc } = await supabase.from('incidents').select('id').eq('id', req.params.id).eq('user_id', req.user!.id).single()
+  if (!inc) return res.status(404).json({ error: 'Incident not found' })
   const { data: existing } = await supabase.from('incident_postmortems').select('id').eq('incident_id', req.params.id).maybeSingle()
   let result: any
   if (existing) {

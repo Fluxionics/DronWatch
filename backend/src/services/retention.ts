@@ -36,31 +36,52 @@ interface BucketGroup {
   region: string
   checks: number
   down: number
-  rts: number[]
+  rtSum: number
+  rtCount: number
   last: boolean
 }
 
 function addCheckGroup(map: Map<string, BucketGroup>, bucket: Date, region: string, isUp: boolean, responseTime: number | null) {
   const key = `${region}|${bucket.toISOString()}`
-  const g: BucketGroup = map.get(key) ?? { bucket: bucket.toISOString(), region, checks: 0, down: 0, rts: [], last: isUp }
+  const g: BucketGroup = map.get(key) ?? { bucket: bucket.toISOString(), region, checks: 0, down: 0, rtSum: 0, rtCount: 0, last: isUp }
   g.checks++
   if (!isUp) g.down++
-  if (responseTime !== null && responseTime !== undefined) g.rts.push(responseTime)
+  if (responseTime !== null && responseTime !== undefined) { g.rtSum += responseTime; g.rtCount++ }
   g.last = isUp
   map.set(key, g)
 }
 
+function groupAvg(g: BucketGroup): number | null {
+  return g.rtCount > 0 ? Math.round(g.rtSum / g.rtCount) : null
+}
+
+async function supportsWeighted(target: 'hourly_stats' | 'daily_stats'): Promise<boolean> {
+  const { error } = await supabase.from(target).select('response_sum_ms').limit(1)
+  return !error
+}
+
 async function writeGroups(monitorId: string, target: 'hourly_stats' | 'daily_stats', groups: Map<string, BucketGroup>) {
+  const weighted = await supportsWeighted(target)
   for (const g of groups.values()) {
-    await supabase.from(target).upsert({
+    const base = {
       monitor_id: monitorId,
       region: g.region,
       bucket: g.bucket,
       check_count: g.checks,
       down_count: g.down,
-      avg_response_ms: g.rts.length ? Math.round(g.rts.reduce((a, b) => a + b, 0) / g.rts.length) : null,
+      avg_response_ms: groupAvg(g),
       last_status: g.last
-    }, { onConflict: 'monitor_id,region,bucket' })
+    }
+    const payload = weighted ? { ...base, response_sum_ms: g.rtSum, response_count: g.rtCount } : base
+    const { error } = await supabase.from(target).upsert(payload, { onConflict: 'monitor_id,region,bucket' })
+    if (error) {
+      if (weighted && /response_(sum_ms|count)/i.test(error.message || '')) {
+        const { error: retryError } = await supabase.from(target).upsert(base, { onConflict: 'monitor_id,region,bucket' })
+        if (retryError) throw new Error(retryError.message)
+        continue
+      }
+      throw new Error(error.message)
+    }
   }
 }
 
@@ -94,26 +115,38 @@ async function rollupDaily(): Promise<void> {
   for (const m of monitors || []) {
     let offset = 0
     while (true) {
-      const { data: rows } = await supabase
-        .from('hourly_stats')
-        .select('id, bucket, region, check_count, down_count, avg_response_ms, last_status')
+      const weighted = await supportsWeighted('hourly_stats')
+      const selectCols = weighted
+        ? 'id, bucket, region, check_count, down_count, avg_response_ms, response_sum_ms, response_count, last_status'
+        : 'id, bucket, region, check_count, down_count, avg_response_ms, last_status'
+      const query: any = supabase.from('hourly_stats').select(selectCols)
+      const { data: rows, error } = await query
         .eq('monitor_id', m.id)
         .lt('bucket', cutoff.toISOString())
         .order('bucket', { ascending: true })
         .range(offset, offset + 999)
+      if (error) throw new Error(error.message)
       if (!rows || rows.length === 0) break
       const groups = new Map<string, BucketGroup>()
       for (const c of rows) {
         const key = `${c.region || 'self'}|${floorDay(new Date(c.bucket)).toISOString()}`
-        const g: BucketGroup = groups.get(key) ?? { bucket: floorDay(new Date(c.bucket)).toISOString(), region: c.region || 'self', checks: 0, down: 0, rts: [], last: c.last_status === true }
+        const g: BucketGroup = groups.get(key) ?? { bucket: floorDay(new Date(c.bucket)).toISOString(), region: c.region || 'self', checks: 0, down: 0, rtSum: 0, rtCount: 0, last: c.last_status === true }
         g.checks += c.check_count ?? 0
         g.down += c.down_count ?? 0
-        if (c.avg_response_ms !== null && c.avg_response_ms !== undefined) g.rts.push(c.avg_response_ms)
+        const sum = weighted && c.response_sum_ms != null ? Number(c.response_sum_ms) : null
+        const count = weighted && c.response_count != null ? Number(c.response_count) : null
+        if (sum !== null && count !== null) {
+          g.rtSum += sum
+          g.rtCount += count
+        } else if (c.avg_response_ms !== null && c.avg_response_ms !== undefined) {
+          g.rtSum += Number(c.avg_response_ms) * (c.check_count ?? 0)
+          g.rtCount += c.check_count ?? 0
+        }
         g.last = c.last_status === true ? true : g.last
         groups.set(key, g)
       }
       await writeGroups(m.id, 'daily_stats', groups)
-      await deleteChunked('hourly_stats', rows.map(c => c.id))
+      await deleteChunked('hourly_stats', (rows as any[]).map((c: any) => c.id))
       offset += rows.length
       if (rows.length < 1000) break
     }

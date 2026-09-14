@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
 import Landing from './pages/Landing'
 import Auth from './pages/Auth'
+import ResetPassword from './pages/ResetPassword'
 import Dashboard from './pages/Dashboard'
 import MonitorDetail from './pages/MonitorDetail'
 import MonitorForm from './pages/MonitorForm'
@@ -46,6 +47,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/auth" element={<RequireGuest><Auth /></RequireGuest>} />
+        <Route path="/reset-password" element={<RequireGuest><ResetPassword /></RequireGuest>} />
         <Route path="/status/:slug" element={<PublicStatusPage />} />
 
         <Route element={<RequireAuth><Layout /></RequireAuth>}>

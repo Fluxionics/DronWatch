@@ -474,6 +474,8 @@ create table if not exists hourly_stats (
   check_count integer not null default 0,
   down_count integer not null default 0,
   avg_response_ms numeric,
+  response_sum_ms numeric,
+  response_count integer not null default 0,
   last_status boolean,
   unique (monitor_id, region, bucket)
 );
@@ -486,6 +488,8 @@ create table if not exists daily_stats (
   check_count integer not null default 0,
   down_count integer not null default 0,
   avg_response_ms numeric,
+  response_sum_ms numeric,
+  response_count integer not null default 0,
   last_status boolean,
   unique (monitor_id, region, bucket)
 );

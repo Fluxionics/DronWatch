@@ -62,6 +62,16 @@ export async function sendEmail(to: string, message: string, status: string) {
   })
 }
 
+export async function sendReportEmail(to: string, subject: string, html: string) {
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return
+  const transporter = getMailer()
+  await transporter.sendMail({
+    from: `DronWatch Reports <${process.env.GMAIL_USER}>`, to, subject,
+    text: 'Your DronWatch report is available in HTML format.',
+    html
+  })
+}
+
 export async function sendSubscriberEmail(to: string, subject: string, html: string) {
   if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return
   const transporter = getMailer()

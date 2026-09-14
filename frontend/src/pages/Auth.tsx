@@ -116,6 +116,11 @@ export default function Auth() {
               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
             />
             {passwordError && <p className="text-xs text-red-400 mt-1">{passwordError}</p>}
+            {mode === 'login' && (
+              <p className="text-xs text-surface-500 mt-2 text-right">
+                <Link to="/reset-password" className="text-brand-400 hover:text-brand-300">Forgot password?</Link>
+              </p>
+            )}
           </div>
 
           <button type="submit" disabled={isPending} className="btn-primary w-full py-2.5">

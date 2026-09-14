@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken'
 import { createHash, randomUUID } from 'crypto'
 import { supabase } from '../config/supabase'
 import { validate } from '../middleware/validate'
+import { sendSubscriberEmail } from '../services/alertService'
 
 const router = Router()
 
@@ -192,7 +193,23 @@ router.post('/logout', async (req: Request, res: Response) => {
   res.status(204).send()
 })
 
-router.post('/forgot-password', validate(forgotSchema), async (_req, res) => {
+router.post('/forgot-password', validate(forgotSchema), async (req: Request, res: Response) => {
+  const { email } = req.body
+  try {
+    const { data: user } = await supabase.from('users').select('id, email').ilike('email', email).maybeSingle()
+    if (user?.email) {
+      const token = jwt.sign({ id: user.id, type: 'reset' }, process.env.JWT_SECRET!, { expiresIn: '1h' })
+      const base = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')
+      const link = `${base}/reset-password?token=${encodeURIComponent(token)}`
+      await sendSubscriberEmail(
+        user.email,
+        'Reset your DronWatch password',
+        `<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="padding:20px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px"><p style="color:#374151">Use the link below to reset your DronWatch password. It expires in 1 hour.</p><a href="${link}" style="display:inline-block;background:#3b82f6;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;margin-top:12px">Reset password</a><p style="color:#9ca3af;font-size:12px;margin-top:16px">If you did not request this, ignore this email.</p></div></div>`
+      )
+    }
+  } catch (err) {
+    console.error('Forgot password failed', err)
+  }
   res.json({ message: 'If an account exists with that email, a reset link has been sent' })
 })
 

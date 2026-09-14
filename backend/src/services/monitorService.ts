@@ -154,15 +154,23 @@ function rawRequest(urlStr: string, opts: any): Promise<RawResult> {
     const maxRedirects = opts.maxRedirects || 3
 
     const attempt = (href: string, redirectsLeft: number) => {
-      const cu = new URL(href)
+      let cu: URL
+      try { cu = new URL(href) } catch { return resolve({ dnsTime: null, tcpTime: null, tlsTime: null, ttfb: null, totalTime: Date.now() - t0, status: null, headers: {}, body: '', error: 'Invalid URL' }) }
+      if (cu.protocol !== 'http:' && cu.protocol !== 'https:') {
+        return resolve({ dnsTime: null, tcpTime: null, tlsTime: null, ttfb: null, totalTime: Date.now() - t0, status: null, headers: {}, body: '', error: 'Only http/https URLs are supported' })
+      }
       const secure = cu.protocol === 'https:'
       const reqMod = secure ? https : http
       const dnsStart = Date.now()
-      dns.lookup(cu.hostname, { family: 0 }, (lErr, address) => {
+      dns.lookup(cu.hostname, { family: 0, all: true }, (lErr, addrs) => {
         if (lErr) return resolve({ dnsTime: Date.now() - dnsStart, tcpTime: null, tlsTime: null, ttfb: null, totalTime: Date.now() - t0, status: null, headers: {}, body: '', error: `DNS lookup failed: ${lErr.message}` })
-        if (opts.allowPrivateIps !== true && isPrivateIp(String(address))) {
-          return resolve({ dnsTime: Date.now() - dnsStart, tcpTime: null, tlsTime: null, ttfb: null, totalTime: Date.now() - t0, status: null, headers: {}, body: '', error: `Blocked private/loopback address (SSRF guard): ${address}` })
+        const list = (Array.isArray(addrs) ? addrs : [addrs]).map(a => String((a as any)?.address ?? a)).filter(Boolean)
+        if (list.length === 0) return resolve({ dnsTime: Date.now() - dnsStart, tcpTime: null, tlsTime: null, ttfb: null, totalTime: Date.now() - t0, status: null, headers: {}, body: '', error: 'DNS lookup failed: no addresses returned' })
+        const blocked = list.filter(a => isPrivateIp(a))
+        if (opts.allowPrivateIps !== true && blocked.length > 0) {
+          return resolve({ dnsTime: Date.now() - dnsStart, tcpTime: null, tlsTime: null, ttfb: null, totalTime: Date.now() - t0, status: null, headers: {}, body: '', error: `Blocked private/loopback address (SSRF guard): ${blocked.join(', ')}` })
         }
+        const address = list[0]
         const tcpStart = Date.now()
         const req = reqMod.request({
           hostname: address, port: Number(cu.port || (secure ? 443 : 80)), path: cu.pathname + cu.search,
@@ -191,11 +199,10 @@ function rawRequest(urlStr: string, opts: any): Promise<RawResult> {
             finish(req, res.statusCode ?? null, headersObj, bodyBuf.toString('utf8'), null, ttfb, tcpStart)
           })
         })
-        const tcpTimeOf = () => (socketTimes.get(req)?.tcp ?? null)
-        const socketTimes = new Map<any, { tcp?: number }>()
+        const times: { tcpAt?: number; tlsAt?: number } = {}
         req.on('socket', socket => {
-          socket.on('connect', () => { if (!socketTimes.get(req)) socketTimes.set(req, {}); socketTimes.get(req)!.tcp = Date.now() - tcpStart })
-          if (secure) socket.on('secureConnect', () => { if (!socketTimes.get(req)) socketTimes.set(req, {}); socketTimes.get(req)!.tcp = Date.now() - tcpStart })
+          socket.once('connect', () => { if (times.tcpAt == null) times.tcpAt = Date.now() })
+          if (secure) socket.once('secureConnect', () => { times.tlsAt = Date.now() })
         })
         req.on('error', (e: any) => finish(req, null, {}, '', e.code === 'ECONNREFUSED' ? 'Connection refused' : e.code === 'ECONNRESET' ? 'Connection reset' : e.code === 'CERT_HAS_EXPIRED' ? 'TLS certificate expired' : e.code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ? 'TLS self-signed certificate' : e.message, null, tcpStart))
         req.setTimeout(timeout, () => { req.destroy(); finish(req, null, {}, '', `Timed out after ${timeout}ms`, null, tcpStart) })
@@ -204,8 +211,10 @@ function rawRequest(urlStr: string, opts: any): Promise<RawResult> {
         req.end()
 
         function finish(_req: any, status: number | null, headers: Record<string, any>, bodyText: string, error: string | null, ttfb: number | null, tcpStart: number) {
+          const tcpTime = times.tcpAt != null ? Math.max(0, times.tcpAt - tcpStart) : null
+          const tlsTime = secure && times.tlsAt != null ? Math.max(0, times.tlsAt - (times.tcpAt ?? tcpStart)) : null
           return resolve({
-            dnsTime: Date.now() - dnsStart, tcpTime: tcpTimeOf(), tlsTime: tcpTimeOf(),
+            dnsTime: Date.now() - dnsStart, tcpTime, tlsTime,
             ttfb, totalTime: Date.now() - t0, status, headers, body: error ? bodyText.slice(0, 2000) : bodyText, error
           })
         }
@@ -551,7 +560,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
       const r = await checkApiSteps(monitor, vars); isUp = r.isUp; errorMessage = r.error
     } else {
       const r = await checkHttpLogic(monitor, vars); isUp = r.isUp; statusCode = r.status; responseTime = r.r.totalTime; errorMessage = r.error
-      dnsTime = r.r.dnsTime; tcpTime = r.r.tcpTime; tlsTime = monitor.url.startsWith('https') ? r.r.tcpTime : null; ttfb = r.r.ttfb
+      dnsTime = r.r.dnsTime; tcpTime = r.r.tcpTime; tlsTime = r.r.tlsTime; ttfb = r.r.ttfb
     }
   }
 
