@@ -7,8 +7,10 @@ import api, { apiRoot } from '../utils/api'
 import clsx from 'clsx'
 
 function isCustomHost(): boolean {
-  const canonical = (import.meta.env.VITE_CANONICAL_HOST || '').trim().toLowerCase()
-  if (!canonical) return false
+  const raw = (import.meta.env.VITE_CANONICAL_HOST || '').trim().toLowerCase()
+  if (!raw) return false
+  let canonical = raw
+  try { canonical = new URL(raw).hostname } catch { /* keep raw */ }
   const host = window.location.hostname.toLowerCase()
   return host !== canonical && host !== 'localhost' && host !== '127.0.0.1'
 }

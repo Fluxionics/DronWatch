@@ -24,8 +24,9 @@ export const useAuthStore = create<AuthState>()(
         const refresh = get().refreshToken
         set({ user: null, accessToken: null, refreshToken: null })
         if (refresh) {
+          const base = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '').replace(/\/api$/, '')
           axios
-            .post(`${import.meta.env.VITE_API_URL || ''}/api/auth/logout`, { refresh })
+            .post(`${base}/api/auth/logout`, { refresh })
             .catch(() => {})
         }
       }
