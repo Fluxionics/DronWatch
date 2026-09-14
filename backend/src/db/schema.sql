@@ -39,7 +39,7 @@ alter table monitors add column if not exists parent_monitor_id uuid references 
 alter table monitors add column if not exists retry_count integer not null default 1;
 alter table monitors add column if not exists last_latency integer;
 alter table monitors drop constraint if exists monitors_type_check;
-alter table monitors add constraint monitors_type_check check (type in ('http','ping','tcp','keyword','heartbeat','dns','ssl','domain'));
+alter table monitors add constraint monitors_type_check check (type in ('http','ping','tcp','keyword','heartbeat','dns','ssl','domain','synthetic'));
 alter table monitors add column if not exists priority integer not null default 0;
 alter table monitors add column if not exists region text not null default 'auto';
 
@@ -248,6 +248,10 @@ create table if not exists system_stats (
   containers integer,
   network_in integer,
   network_out integer,
+  uptime integer,
+  temperature numeric,
+  services jsonb,
+  extra jsonb,
   recorded_at timestamptz not null default now()
 );
 

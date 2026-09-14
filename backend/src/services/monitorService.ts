@@ -11,6 +11,8 @@ import { sendAlert, sendSubscriberEmail } from './alertService'
 import { evaluateAlertRules } from './alertRules'
 import { startEscalation, stopEscalation } from './escalationService'
 import { assessSecurity } from './securityInspector'
+import { runSyntheticCheck } from './syntheticService'
+import { markAnomalyIfNeeded } from './anomalyService'
 import { rolledSeries, bucketedUptime, RETENTION } from './retention'
 
 interface RawResult {
@@ -571,6 +573,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
   let daysLeft: number | null = null
   let httpHeaders: Record<string, any> | null = null
   let security: any = null
+  let syntheticSteps: any = null
   const cfg = monitor.config || {}
 
   if (type === 'tcp') {
@@ -586,6 +589,8 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
     if (isUp && cfg.warn_days && r.daysLeft !== null && r.daysLeft <= cfg.warn_days) errorMessage = `Certificate expires in ${r.daysLeft} days`
   } else if (type === 'domain') {
     const r = await checkDomainLogic(monitor); isUp = r.isUp; responseTime = r.responseTime; errorMessage = r.error; dnsTime = r.responseTime
+  } else if (type === 'synthetic') {
+    const r = await runSyntheticCheck(monitor); isUp = r.isUp; responseTime = r.responseTime; errorMessage = r.error; syntheticSteps = r.steps
   } else if (type === 'http' || type === 'keyword') {
     if (Array.isArray(cfg.steps) && cfg.steps.length > 0) {
       const r = await checkApiSteps(monitor, vars); isUp = r.isUp; errorMessage = r.error
@@ -649,7 +654,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
     // Single host simulation: replicate the single probe result to each region
     const perRegionResults: Array<{ region: string; isUp: boolean }> = []
     for (const r of targetRegions) {
-      const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, responseSize, security, outage_hint: r }, r)
+      const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, responseSize, security, syntheticSteps, outage_hint: r }, r)
       checks.push(c)
       perRegionResults.push({ region: r, isUp })
     }
@@ -658,7 +663,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
     outageType = quorum.outageType
   } else if (isDistributedWorker) {
     // Distributed: store single region check, then evaluate quorum from recent per-region checks
-    const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, responseSize, security }, workerRegion)
+    const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, responseSize, security, syntheticSteps }, workerRegion)
     checks.push(c)
     // Fetch latest per-region status within 2 intervals to compute quorum
     try {
@@ -679,7 +684,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
       overallUp = isUp
     }
   } else {
-    const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, responseSize, security })
+    const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, responseSize, security, syntheticSteps })
     checks.push(c)
     overallUp = isUp
   }
@@ -725,6 +730,9 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
     try { await startEscalation({ id: monitor.id, user_id: monitor.user_id, escalation_policy_id: (monitor as any).escalation_policy_id, name: monitor.name, url: monitor.url }) } catch {}
   } else {
     try { await stopEscalation(monitor.id) } catch {}
+  }
+  if (responseTime !== null && check && (check as any).id && !String((check as any).id).startsWith('skip-')) {
+    try { await markAnomalyIfNeeded(monitor.id, (check as any).id, responseTime) } catch {}
   }
   return check
 }

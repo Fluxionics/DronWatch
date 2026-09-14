@@ -40,10 +40,10 @@ router.get('/:id/script', forbidAgents, async (req: AuthenticatedRequest, res: R
   if (!agent) return
   const { data: user } = await supabase.from('users').select('username').eq('id', req.user!.id).single()
   const script = `#!/usr/bin/env node
-// DronWatch server agent for ${agent.name} (${user?.username || 'user'})
+// DronWatch agent 2.0 for ${agent.name} (${user?.username || 'user'})
 // Required env: DW_AGENT_TOKEN=<token shown once on creation>
-// Optional env: AGENT_API_URL (default: this server), DW_INTERVAL (seconds, default 30)
-const https = require('https'), http = require('http'), os = require('os'), fs = require('fs');
+// Optional env: AGENT_API_URL (default: this server), DW_INTERVAL (seconds, default 30), DW_SERVICES="nginx:80,postgres:5432,redis:6379"
+const https = require('https'), http = require('http'), os = require('os'), fs = require('fs'), net = require('net');
 const HOST = (process.env.AGENT_API_URL || '${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/api').replace(/\\/$/, '');
 const AGENT_ID = '${agent.id}';
 const AGENT_TOKEN = process.env.DW_AGENT_TOKEN || '';
@@ -69,10 +69,42 @@ function diskUsage() {
     return Math.round((used / (info.blocks * info.bsize)) * 1000) / 10;
   } catch { return 0; }
 }
+function getTemperature() {
+  try {
+    for (const p of ['/sys/class/thermal/thermal_zone0/temp','/sys/class/thermal/thermal_zone1/temp']) {
+      try { const v = parseInt(fs.readFileSync(p,'utf8').trim()); if (!isNaN(v)) return Math.round(v/100)/10; } catch {}
+    }
+  } catch {}
+  return null;
+}
+function getDocker() {
+  return new Promise(res => {
+    const req = http.request({ socketPath: '/var/run/docker.sock', path: '/containers/json?all=1', method: 'GET' }, r => {
+      let d=''; r.on('data',c=>d+=c); r.on('end',()=>{
+        try { const arr=JSON.parse(d); res(arr.map(c=>({ name:(c.Names&&c.Names[0]||'').replace(/^\\//,''), image:c.Image, state:c.State, status:c.Status })))} catch { res([])}
+      });
+    });
+    req.on('error',()=>res([])); req.setTimeout(1500,()=>{try{req.destroy()}catch{};res([])}); req.end();
+  });
+}
+function probeService(host, port) {
+  return new Promise(res=>{
+    const s=net.createConnection({host, port, timeout:800},()=>{s.destroy();res(true)});
+    s.on('error',()=>res(false)); s.on('timeout',()=>{s.destroy();res(false)});
+  });
+}
+async function getServices() {
+  const raw = process.env.DW_SERVICES || 'nginx:80,postgres:5432,redis:6379';
+  const list = raw.split(',').map(s=>s.trim()).filter(Boolean).map(p=>{const [name,port]=p.split(':');return {name, port:parseInt(port)||80}});
+  const out=[];
+  for (const svc of list.slice(0,12)) { const up=await probeService('127.0.0.1', svc.port); out.push({name:svc.name, port:svc.port, status:up?'up':'down'}); }
+  return out;
+}
 
 async function collect() {
   const mem = os.totalmem();
   const lm = linuxMetrics();
+  const [temp, docker, services] = await Promise.all([Promise.resolve(getTemperature()), getDocker(), getServices()]);
   return {
     platform: process.env.DW_PLATFORM || os.type() + ' ' + os.release(),
     cpu: await cpuUsage(),
@@ -80,8 +112,12 @@ async function collect() {
     disk: diskUsage(),
     load: Array.isArray(os.loadavg) ? (os.loadavg()[0] || 0) : 0,
     processes: lm.processes,
-    containers: 0,
-    network_in: lm.network_in, network_out: lm.network_out
+    containers: docker.length,
+    network_in: lm.network_in, network_out: lm.network_out,
+    uptime: Math.round(os.uptime()),
+    temperature: temp,
+    services,
+    docker
   };
 }
 
@@ -116,13 +152,26 @@ router.post('/:id/heartbeat', async (req: AuthenticatedRequest, res: Response) =
   const stats = {
     cpu: clamp(s.cpu, 100000), mem: clamp(s.mem, 100000), disk: clamp(s.disk, 100000),
     load: clamp(s.load, 1e9), processes: clamp(s.processes, 1e7), containers: clamp(s.containers, 1e7),
-    network_in: clamp(s.network_in, 1e15), network_out: clamp(s.network_out, 1e15)
+    network_in: clamp(s.network_in, 1e15), network_out: clamp(s.network_out, 1e15),
+    uptime: clamp(s.uptime, 1e9), temperature: s.temperature === null || s.temperature === undefined ? null : clamp(s.temperature, 200),
+    services: Array.isArray(s.services) ? s.services.slice(0, 20).map((x: any) => ({ name: String(x.name || '').slice(0, 50), port: clamp(x.port, 65535), status: x.status === 'up' ? 'up' : 'down' })) : null,
+    docker: Array.isArray(s.docker) ? s.docker.slice(0, 50).map((x: any) => ({ name: String(x.name || '').slice(0, 100), image: String(x.image || '').slice(0, 200), state: String(x.state || '').slice(0, 30), status: String(x.status || '').slice(0, 200) })) : null
   }
-  const { data, error } = await supabase.from('system_stats').insert({
+  let payload: any = {
     agent_id: agent.id, cpu: stats.cpu, mem: stats.mem, disk: stats.disk,
     load: stats.load, processes: stats.processes, containers: stats.containers,
-    network_in: stats.network_in, network_out: stats.network_out
-  }).select().single()
+    network_in: stats.network_in, network_out: stats.network_out,
+    uptime: stats.uptime, temperature: stats.temperature, services: stats.services, extra: stats.docker ? { docker: stats.docker } : null
+  }
+  let { data, error } = await supabase.from('system_stats').insert(payload).select().single()
+  if (error && /uptime|temperature|services|extra/i.test(error.message || '')) {
+    const fallback = await supabase.from('system_stats').insert({
+      agent_id: agent.id, cpu: stats.cpu, mem: stats.mem, disk: stats.disk,
+      load: stats.load, processes: stats.processes, containers: stats.containers,
+      network_in: stats.network_in, network_out: stats.network_out
+    }).select().single()
+    data = fallback.data; error = fallback.error as any
+  }
   if (error) return res.status(500).json({ error: error.message })
   await supabase.from('agents').update({ last_seen: new Date().toISOString(), platform: String(s.platform || agent.platform || '').slice(0, 100) }).eq('id', agent.id)
   try {

@@ -9,7 +9,7 @@ export interface User {
   updated_at: string
 }
 
-export type MonitorType = 'http' | 'ping' | 'tcp' | 'keyword' | 'heartbeat' | 'dns' | 'ssl' | 'domain'
+export type MonitorType = 'http' | 'ping' | 'tcp' | 'keyword' | 'heartbeat' | 'dns' | 'ssl' | 'domain' | 'synthetic'
 
 export interface Monitor {
   id: string

@@ -7,7 +7,7 @@ export interface User {
   created_at: string
 }
 
-export type MonitorType = 'http' | 'ping' | 'tcp' | 'keyword' | 'heartbeat' | 'dns' | 'ssl' | 'domain'
+export type MonitorType = 'http' | 'ping' | 'tcp' | 'keyword' | 'heartbeat' | 'dns' | 'ssl' | 'domain' | 'synthetic'
 
 export type AlertChannelType = 'email' | 'slack' | 'discord' | 'webhook' | 'telegram' | 'teams' | 'google_chat' | 'pushover' | 'gotify' | 'mattermost' | 'matrix' | 'pagerduty' | 'opsgenie' | 'twilio_sms' | 'jira' | 'linear' | 'github_issue' | 'gitlab_issue' | 'webpush'
 

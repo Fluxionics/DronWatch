@@ -45,6 +45,12 @@ export default function MonitorDetail() {
     enabled: !!id,
     refetchInterval: 60_000
   })
+  const { data: anomalies } = useQuery<any[]>({
+    queryKey: ['monitor-anomalies', id],
+    queryFn: async () => { const { data } = await api.get(`/api/monitors/${id}/anomalies`); return data },
+    enabled: !!id,
+    refetchInterval: 60_000
+  })
   const [reporting, setReporting] = useState(false)
 
   const downloadReport = async (fmt: 'csv' | 'json') => {
@@ -298,6 +304,24 @@ export default function MonitorDetail() {
         </div>
       )}
 
+      {anomalies && anomalies.length > 0 && (
+        <div className="card">
+          <h2 className="font-semibold text-surface-100 mb-4">Anomaly detection</h2>
+          <p className="text-xs text-surface-500 mb-3">Latency spikes vs 50-sample baseline (&gt;3σ or &gt;2.5× +300ms). Stored per check as <code className="font-mono text-surface-400">extra.anomaly</code>.</p>
+          <div className="space-y-1.5">
+            {anomalies.map((a: any) => (
+              <div key={a.id} className="flex items-center gap-3 rounded border border-amber-800 bg-amber-900/20 px-3 py-2 text-xs">
+                <span className="text-amber-400 font-bold">⚠</span>
+                <span className="font-mono text-amber-300">{a.response_time}ms</span>
+                <span className="text-surface-300 truncate flex-1">{a.extra?.anomalyReason || 'Anomalous latency'}</span>
+                <span className="text-surface-600 ml-auto">{formatDistanceToNow(new Date(a.checked_at), { addSuffix: true })}</span>
+                <span className="font-mono text-surface-500">{a.region || 'self'}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {downtime && downtime.length > 0 && (
         <div className="card">
           <h2 className="font-semibold text-surface-100 mb-4">Downtime events</h2>
@@ -412,6 +436,22 @@ export default function MonitorDetail() {
           )}
 
           <div className="text-xs text-surface-500">Report period: last 90 days. Full exports available as CSV and JSON.</div>
+        </div>
+      )}
+
+      {monitor.type === 'synthetic' && (checksData?.data?.[0] as any)?.extra?.syntheticSteps && (
+        <div className="card">
+          <h2 className="font-semibold text-surface-100 mb-4">Synthetic — last run</h2>
+          <div className="space-y-1.5">
+            {((checksData?.data?.[0] as any).extra.syntheticSteps as any[]).map((st: any) => (
+              <div key={st.step} className={`flex items-center gap-3 rounded px-3 py-2 text-sm border ${st.ok ? 'border-emerald-800 bg-emerald-900/20' : 'border-red-800 bg-red-900/20'}`}>
+                <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${st.ok ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'}`}>{st.step}</span>
+                <span className="font-mono text-xs text-surface-300">{st.action}</span>
+                <span className={`text-xs ${st.ok ? 'text-emerald-300' : 'text-red-300'}`}>{st.ok ? 'OK' : st.error || 'failed'}</span>
+                <span className="ml-auto text-xs font-mono text-surface-500">{st.duration}ms</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

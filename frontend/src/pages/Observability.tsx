@@ -67,12 +67,41 @@ function AgentsSection() {
                 <p className="text-sm font-medium text-surface-200">{a.name}</p>
                 <p className="text-xs text-surface-500">created {formatDistanceToNow(new Date(a.created_at), { addSuffix: true })}{a.last_seen && ` · last seen ${formatDistanceToNow(new Date(a.last_seen), { addSuffix: true })}`}</p>
                 {a.last_stats && (
-                  <div className="flex gap-3 mt-1 text-[11px] font-mono text-surface-400">
-                    <span>CPU {a.last_stats.cpu ?? '-'}%</span>
-                    <span>MEM {a.last_stats.mem ?? '-'}%</span>
-                    <span>LOAD {a.last_stats.load ?? '-'}</span>
-                    <span>PROC {a.last_stats.processes ?? '-'}</span>
-                  </div>
+                  <>
+                    <div className="flex flex-wrap gap-3 mt-1 text-[11px] font-mono text-surface-400">
+                      <span>CPU {a.last_stats.cpu ?? '-'}%</span>
+                      <span>MEM {a.last_stats.mem ?? '-'}%</span>
+                      <span>DISK {a.last_stats.disk ?? '-'}%</span>
+                      <span>LOAD {a.last_stats.load ?? '-'}</span>
+                      <span>PROC {a.last_stats.processes ?? '-'}</span>
+                      <span>UP {a.last_stats.uptime ? `${Math.floor(a.last_stats.uptime/3600)}h` : '-'}</span>
+                      {a.last_stats.temperature !== null && a.last_stats.temperature !== undefined && <span>TEMP {a.last_stats.temperature}°C</span>}
+                    </div>
+                    {a.last_stats.services && Array.isArray(a.last_stats.services) && a.last_stats.services.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-1.5">
+                        {a.last_stats.services.map((svc: any, i: number) => (
+                          <span key={i} className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium border ${svc.status === 'up' ? 'border-emerald-800 bg-emerald-900/30 text-emerald-300' : 'border-red-800 bg-red-900/30 text-red-300'}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${svc.status === 'up' ? 'bg-emerald-400' : 'bg-red-400'}`} />{svc.name}:{svc.port}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {a.last_stats.extra?.docker && Array.isArray(a.last_stats.extra.docker) && a.last_stats.extra.docker.length > 0 && (
+                      <div className="mt-1.5 rounded border border-surface-800 bg-surface-950 p-2">
+                        <p className="text-[11px] font-semibold text-surface-300 mb-1">Docker — {a.last_stats.extra.docker.length} containers</p>
+                        <div className="space-y-1 max-h-32 overflow-auto">
+                          {a.last_stats.extra.docker.slice(0, 8).map((c: any, i: number) => (
+                            <div key={i} className="flex items-center gap-2 text-[11px] font-mono">
+                              <span className={`w-1.5 h-1.5 rounded-full ${c.state === 'running' ? 'bg-emerald-400' : 'bg-surface-600'}`} />
+                              <span className="text-surface-300 truncate">{c.name}</span>
+                              <span className="text-surface-600 truncate">{c.image}</span>
+                              <span className="text-surface-500 ml-auto truncate">{c.status}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
               <button onClick={() => remove.mutate(a.id)} className="btn-ghost text-xs text-red-400">Remove</button>
@@ -88,9 +117,11 @@ function LogsSection() {
   const qc = useQueryClient()
   const [q, setQ] = useState('')
   const [level, setLevel] = useState('')
+  const [live, setLive] = useState(false)
   const { data: logs } = useQuery({
     queryKey: ['logs', q, level],
-    queryFn: async () => { const { data } = await api.get('/api/logs/search', { params: { q, level, limit: 100 } }); return data }
+    queryFn: async () => { const { data } = await api.get('/api/logs/search', { params: { q, level, limit: 100 } }); return data },
+    refetchInterval: live ? 2000 : false
   })
   const { data: levels } = useQuery({ queryKey: ['log-levels'], queryFn: async () => { const { data } = await api.get('/api/logs/levels'); return data } })
 
@@ -103,12 +134,13 @@ function LogsSection() {
     <section className="card space-y-4">
       <h2 className="font-semibold text-surface-100">Log search</h2>
       <p className="text-sm text-surface-400">Ingest logs via <code className="text-brand-400 font-mono text-xs">POST /api/logs/ingest?api_key=YOUR_KEY</code> with JSON bodies, then search below.</p>
-      <div className="flex gap-2">
-        <input className="input flex-1" placeholder="Search message... (e.g. error)" value={q} onChange={e => setQ(e.target.value)} />
+      <div className="flex flex-wrap gap-2">
+        <input className="input flex-1 min-w-[180px]" placeholder="Search message... (e.g. error)" value={q} onChange={e => setQ(e.target.value)} />
         <select className="input w-auto" value={level} onChange={e => setLevel(e.target.value)}>
           <option value="">All levels</option>
           {['debug', 'info', 'warning', 'error', 'critical'].map(l => <option key={l} value={l}>{l}</option>)}
         </select>
+        <button className={`text-xs px-3 py-2 rounded-lg border font-medium transition-colors ${live ? 'bg-emerald-500/20 border-emerald-800 text-emerald-300' : 'btn-ghost'}`} onClick={() => setLive(!live)}>{live ? '● Live' : '○ Live tail'}</button>
         <button className="btn-ghost text-xs" onClick={() => ingest.mutate()} disabled={ingest.isPending}>{ingest.isPending ? 'Sending...' : 'Send demo logs'}</button>
       </div>
       {levels && Object.keys(levels).length > 0 && (

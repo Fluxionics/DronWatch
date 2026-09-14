@@ -26,7 +26,8 @@ const TYPES: { value: MonitorType; label: string; desc: string }[] = [
   { value: 'dns', label: 'DNS', desc: 'A..SRV, custom resolver' },
   { value: 'heartbeat', label: 'Heartbeat', desc: 'Cron / job signals' },
   { value: 'ssl', label: 'SSL / TLS', desc: 'Certificate + expiry' },
-  { value: 'domain', label: 'Domain', desc: 'RDAP/WHOIS expiry' }
+  { value: 'domain', label: 'Domain', desc: 'RDAP/WHOIS expiry' },
+  { value: 'synthetic', label: 'Synthetic', desc: 'Browser flows (Playwright)' }
 ]
 
 type Section = 'auth' | 'headers' | 'cookies' | 'checks' | 'advanced' | 'multi'
@@ -352,6 +353,35 @@ export default function MonitorForm() {
           </div>
         )}
 
+        {form.type === 'synthetic' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="label">Synthetic browser steps (Playwright)</label>
+              <span className="text-xs text-surface-500">Chromium</span>
+            </div>
+            <p className="text-xs text-surface-500">Example flow: goto → click → fill → wait → assert. Leaves a trail in check history with per-step timing.</p>
+            {((cfg.synthetic_steps || []) as any[]).map((s: any, i: number) => (
+              <div key={i} className="rounded-lg border border-surface-800 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-brand-400">Step {i + 1}</span>
+                  <select className="input flex-1" value={s.action || 'goto'} onChange={e => { const arr = [...(cfg.synthetic_steps || [])]; arr[i] = { ...arr[i], action: e.target.value }; setCfg({ synthetic_steps: arr }) }}>
+                    <option value="goto">Goto URL</option><option value="click">Click</option><option value="fill">Fill input</option><option value="waitFor">Wait for selector</option><option value="assert">Assert text</option>
+                  </select>
+                  <button type="button" className="btn-ghost text-xs" onClick={() => setCfg({ synthetic_steps: (cfg.synthetic_steps || []).filter((_: any, x:number)=>x!==i) })}>Remove</button>
+                </div>
+                {s.action === 'goto' && <input className="input font-mono" placeholder="https://example.com/login" value={s.url || ''} onChange={e => { const arr=[...(cfg.synthetic_steps||[])]; arr[i]={...arr[i], url:e.target.value}; setCfg({synthetic_steps:arr})}} />}
+                {(s.action === 'click' || s.action === 'waitFor') && <input className="input font-mono" placeholder="CSS selector, e.g. button[type=submit] or .dashboard" value={s.selector || ''} onChange={e => { const arr=[...(cfg.synthetic_steps||[])]; arr[i]={...arr[i], selector:e.target.value}; setCfg({synthetic_steps:arr})}} />}
+                {s.action === 'fill' && <div className="grid grid-cols-2 gap-2"><input className="input font-mono" placeholder="Selector, e.g. input[name=email]" value={s.selector||''} onChange={e=>{const a=[...(cfg.synthetic_steps||[])];a[i]={...a[i],selector:e.target.value};setCfg({synthetic_steps:a})}} /><input className="input" placeholder="Value to fill" value={s.value||''} onChange={e=>{const a=[...(cfg.synthetic_steps||[])];a[i]={...a[i],value:e.target.value};setCfg({synthetic_steps:a})}} /></div>}
+                {s.action === 'assert' && <div className="grid grid-cols-2 gap-2"><input className="input font-mono" placeholder="Selector, e.g. h1" value={s.selector||''} onChange={e=>{const a=[...(cfg.synthetic_steps||[])];a[i]={...a[i],selector:e.target.value};setCfg({synthetic_steps:a})}} /><input className="input" placeholder="Must contain text, e.g. Welcome" value={s.contains||s.value||''} onChange={e=>{const a=[...(cfg.synthetic_steps||[])];a[i]={...a[i],contains:e.target.value};setCfg({synthetic_steps:a})}} /></div>}
+              </div>
+            ))}
+            <button type="button" className="btn-ghost text-xs" onClick={() => setCfg({ synthetic_steps: [...(cfg.synthetic_steps || []), { action: 'goto', url: 'https://example.com' }] })}>+ Add synthetic step</button>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div><label className="label">Synthetic timeout ms</label><input type="number" className="input" value={cfg.synthetic_timeout || 30000} onChange={e=>setCfg({synthetic_timeout: parseInt(e.target.value)||30000})} /></div>
+            </div>
+          </div>
+        )}
+
         <div className="grid sm:grid-cols-3 gap-4">
           <div>
             <label className="label">Check interval</label>
@@ -433,6 +463,12 @@ export default function MonitorForm() {
             {(escalationPolicies || []).map(p => <option key={p.id} value={p.id}>{p.name} ({p.steps.length} steps)</option>)}
           </select>
           <p className="text-xs text-surface-600 mt-1">If set, DOWN will fire step 0 immediately and later steps after their delays while still down.</p>
+        </div>
+
+        <div>
+          <label className="label">Log pattern alert (optional)</label>
+          <input className="input font-mono" placeholder="e.g. OutOfMemoryError or database timeout" value={cfg.log_alert_pattern || ''} onChange={e => setCfg({ log_alert_pattern: e.target.value || undefined })} />
+          <p className="text-xs text-surface-600 mt-1">When a log matching this substring is ingested, DronWatch creates a pattern alert (checked each minute).</p>
         </div>
 
         <div>

@@ -17,7 +17,7 @@ const channelSchema = z.object({
 const monitorSchema = z.object({
   url: z.string().trim().min(1).max(2048),
   name: z.string().trim().min(1).max(200),
-  type: z.enum(['http','ping','tcp','keyword','heartbeat','dns','ssl','domain']).default('http'),
+  type: z.enum(['http','ping','tcp','keyword','heartbeat','dns','ssl','domain','synthetic']).default('http'),
   config: z.record(z.any()).default({}),
   expected_status: z.number().int().min(100).max(599).nullable().optional(),
   check_interval: z.number().int().min(30).max(3600).default(300),
@@ -36,6 +36,10 @@ const monitorSchema = z.object({
   }
   const mode = (data.config as any)?.region_mode
   if (mode !== undefined && !['quorum','all','any'].includes(mode)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'region_mode must be quorum, all or any', path: ['config', 'region_mode'] })
+  if (data.type === 'synthetic') {
+    const steps = (data.config as any)?.synthetic_steps
+    if (!Array.isArray(steps) || steps.length === 0) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'synthetic monitors require synthetic_steps', path: ['config', 'synthetic_steps'] })
+  }
 })
 
 router.use(requireAuth, forbidAgents)
@@ -52,8 +56,15 @@ router.get('/:id/security', async (req: AuthenticatedRequest, res: Response) => 
   const { data: latest } = await supabase.from('checks').select('extra, checked_at, status_code').eq('monitor_id', req.params.id).order('checked_at', { ascending: false }).limit(1).maybeSingle()
   const stored = (latest as any)?.extra?.security
   if (stored) return res.json({ ...stored, checked_at: (latest as any).checked_at })
-  // Fallback: no stored security – try live assessment for https monitors
   res.json(null)
+})
+
+router.get('/:id/anomalies', async (req: AuthenticatedRequest, res: Response) => {
+  const { data: monitor } = await supabase.from('monitors').select('id').eq('id', req.params.id).eq('user_id', req.user!.id).single()
+  if (!monitor) return res.status(404).json({ error: 'Monitor not found' })
+  const { data } = await supabase.from('checks').select('id, response_time, extra, checked_at, region').eq('monitor_id', req.params.id).order('checked_at', { ascending: false }).limit(100)
+  const anomalies = (data || []).filter((r: any) => r.extra?.anomaly)
+  res.json(anomalies.slice(0, 20))
 })
 
 router.get('/', async (req: AuthenticatedRequest, res: Response) => {
