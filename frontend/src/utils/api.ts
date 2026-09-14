@@ -1,7 +1,7 @@
 import axios from 'axios'
 import { useAuthStore } from '../store/authStore'
 
-function apiRoot(): string {
+export function apiRoot(): string {
   const root = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
   return root.endsWith('/api') ? root : `${root}/api`
 }

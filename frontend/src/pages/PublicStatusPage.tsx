@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { formatDistanceToNow } from 'date-fns'
 import { usePublicStatusPage, usePublicStatusPageByDomain } from '../hooks/useStatusPages'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
-import api from '../utils/api'
+import api, { apiRoot } from '../utils/api'
 import clsx from 'clsx'
 
 function isCustomHost(): boolean {
@@ -79,7 +79,7 @@ export default function PublicStatusPage() {
           <h1 className="text-2xl font-bold text-surface-50 mb-1">{data.name}</h1>
           <div className="flex items-center gap-4 mt-2">
             <a
-              href={`/api/status-pages/feed/${data.slug}`}
+              href={`${apiRoot()}/status-pages/feed/${data.slug}`}
               className="inline-flex items-center gap-1.5 text-xs text-surface-400 hover:text-surface-200 transition-colors"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
