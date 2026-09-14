@@ -39,6 +39,12 @@ export default function MonitorDetail() {
     enabled: !!id,
     refetchInterval: 60_000
   })
+  const { data: security } = useQuery<any>({
+    queryKey: ['monitor-security', id],
+    queryFn: async () => { const { data } = await api.get(`/api/monitors/${id}/security`); return data },
+    enabled: !!id,
+    refetchInterval: 60_000
+  })
   const [reporting, setReporting] = useState(false)
 
   const downloadReport = async (fmt: 'csv' | 'json') => {
@@ -270,6 +276,28 @@ export default function MonitorDetail() {
         </div>
       )}
 
+      {security && security.score && (
+        <div className="card">
+          <h2 className="font-semibold text-surface-100 mb-4">Security Inspector</h2>
+          <div className="flex items-center gap-4 mb-4">
+            <div className={`w-16 h-16 rounded-xl flex items-center justify-center text-2xl font-bold ${security.score === 'A+' || security.score === 'A' ? 'bg-emerald-500/20 text-emerald-400' : security.score === 'B' ? 'bg-amber-500/20 text-amber-400' : 'bg-red-500/20 text-red-400'}`}>{security.score}</div>
+            <div>
+              <p className="text-sm text-surface-200">{security.summary}</p>
+              <p className="text-xs text-surface-500">Grade {security.grade}% · {security.checked_at ? formatDistanceToNow(new Date(security.checked_at), { addSuffix: true }) : ''}</p>
+            </div>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {security.checks?.map((c: any) => (
+              <div key={c.name} className="flex items-center gap-2 text-xs border border-surface-800 rounded px-2 py-1.5">
+                <span className={c.pass ? 'text-emerald-400' : 'text-red-400'}>{c.pass ? '✓' : '✗'}</span>
+                <span className="font-medium text-surface-300">{c.name}</span>
+                <span className="text-surface-500 truncate ml-auto font-mono text-[11px]">{c.detail}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {downtime && downtime.length > 0 && (
         <div className="card">
           <h2 className="font-semibold text-surface-100 mb-4">Downtime events</h2>
@@ -303,21 +331,54 @@ export default function MonitorDetail() {
 
           <div>
             <p className="text-xs text-surface-500 uppercase tracking-wide mb-2">Uptime windows</p>
-            <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
               {Object.entries(report.windows || {}).map(([label, val]) => (
                 <div key={label} className="rounded-lg bg-surface-800 p-3 text-center">
                   <p className="text-[11px] text-surface-500">{label}</p>
                   <p className="text-sm font-bold text-surface-100">{val !== null ? `${val}%` : '—'}</p>
+                  {(report as any).downtimeMs?.[label] !== undefined && (report as any).downtimeMs[label] !== null && (
+                    <p className="text-[10px] text-surface-600 mt-1">{formatMs((report as any).downtimeMs[label])} down</p>
+                  )}
                 </div>
               ))}
             </div>
           </div>
+
+          {(report as any).slaAllowedMs && (
+            <div>
+              <p className="text-xs text-surface-500 uppercase tracking-wide mb-2">SLA calculator — {report.slaTarget}% target</p>
+              <div className="overflow-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="text-surface-500"><th className="text-left py-1">Window</th><th className="text-right py-1">Allowed</th><th className="text-right py-1">Actual down</th><th className="text-right py-1">Status</th></tr></thead>
+                  <tbody>
+                    {Object.keys(report.windows || {}).map(label => {
+                      const allowed = (report as any).slaAllowedMs?.[label]
+                      const actual = (report as any).downtimeMs?.[label]
+                      const ok = actual !== null && allowed !== null ? actual <= allowed : null
+                      return (
+                        <tr key={label} className="border-t border-surface-800">
+                          <td className="py-1.5 font-mono text-surface-300">{label}</td>
+                          <td className="py-1.5 text-right font-mono text-surface-400">{allowed !== null ? formatMs(allowed) : '—'}</td>
+                          <td className="py-1.5 text-right font-mono text-surface-400">{actual !== null ? formatMs(actual) : '—'}</td>
+                          <td className={`py-1.5 text-right font-medium ${ok === null ? 'text-surface-600' : ok ? 'text-emerald-400' : 'text-red-400'}`}>{ok === null ? '—' : ok ? '✅ PASS' : '❌ BREACH'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           <div className="grid sm:grid-cols-4 gap-4">
             <Stat label="Error budget" value={report.errorBudget !== null ? `${report.errorBudget > 0 ? '+' : ''}${report.errorBudget}%` : '—'} tone={report.errorBudget !== null && (report.errorBudget as number) < 0 ? 'text-red-400' : undefined} />
             <Stat label="SLA target" value={report.slaTarget ? `${report.slaTarget}%` : '—'} />
             <Stat label="MTTA" value={report.mtta !== null ? `${report.mtta} min` : '—'} />
             <Stat label="MTTR" value={report.mttr !== null ? `${report.mttr} min` : '—'} />
+            <Stat label="MTBF" value={(report as any).mtbf !== null && (report as any).mtbf !== undefined ? `${(report as any).mtbf} min` : '—'} />
+            <Stat label="Availability (90d)" value={(report as any).availability !== null && (report as any).availability !== undefined ? `${(report as any).availability}%` : report.windows?.['90d'] !== null ? `${report.windows['90d']}%` : '—'} />
+            <Stat label="Avg size" value={(report.stats as any)?.avgResponseSize ? `${(report.stats as any).avgResponseSize} B` : '—'} />
+            <Stat label="Success rate" value={(report.stats as any)?.successRate !== null ? `${(report.stats as any).successRate}%` : '—'} />
           </div>
 
           {report.daily && report.daily.length > 0 && (
@@ -376,6 +437,13 @@ export default function MonitorDetail() {
       </div>
     </div>
   )
+}
+
+function formatMs(ms: number): string {
+  if (ms < 60000) return `${Math.round(ms / 1000)}s`
+  if (ms < 3600000) return `${(ms / 60000).toFixed(1)}m`
+  if (ms < 86400000) return `${(ms / 3600000).toFixed(1)}h`
+  return `${(ms / 86400000).toFixed(1)}d`
 }
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: string }) {

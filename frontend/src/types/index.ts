@@ -67,6 +67,8 @@ export interface MonitorStats {
   min: number | null
   max: number | null
   errorRate: number | null
+  successRate?: number | null
+  avgResponseSize?: number | null
   avgDns: number | null
   avgTcp: number | null
   avgTls: number | null
@@ -83,6 +85,11 @@ export interface MonitorReport {
   incidentDurationAvg: number | null
   mtta: number | null
   mttr: number | null
+  mtbf?: number | null
+  availability?: number | null
+  downtimeMs?: Record<string, number | null>
+  slaAllowedMs?: Record<string, number | null>
+  slaAchieved?: Record<string, number | null>
   errorBudget: number | null
   slaTarget: number
   daily: Array<{ date: string; uptime: number; avg: number | null }>

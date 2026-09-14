@@ -10,6 +10,7 @@ import { Monitor, Check } from '../types'
 import { sendAlert, sendSubscriberEmail } from './alertService'
 import { evaluateAlertRules } from './alertRules'
 import { startEscalation, stopEscalation } from './escalationService'
+import { assessSecurity } from './securityInspector'
 import { rolledSeries, bucketedUptime, RETENTION } from './retention'
 
 interface RawResult {
@@ -376,7 +377,7 @@ async function checkTcpLogic(monitor: Monitor) {
   })
 }
 
-async function checkSslLogic(monitor: Monitor): Promise<{ isUp: boolean; daysLeft: number | null; expiresAt: string | null; issuer: string | null; subject: string | null; altNames: string | null; responseTime: number; error: string | null }> {
+async function checkSslLogic(monitor: Monitor): Promise<{ isUp: boolean; daysLeft: number | null; expiresAt: string | null; issuer: string | null; subject: string | null; altNames: string | null; tlsVersion: string | null; cipher: string | null; chainLength: number | null; responseTime: number; error: string | null }> {
   const cfg = monitor.config || {}
   const host = cfg.hostname || (() => { try { return new URL(monitor.url).hostname } catch { return monitor.url } })()
   const port = cfg.port || 443
@@ -384,11 +385,27 @@ async function checkSslLogic(monitor: Monitor): Promise<{ isUp: boolean; daysLef
   const start = Date.now()
   if (cfg.allow_private_ips !== true) {
     const guard = await assertPublicHost(host)
-    if (!guard.ok) return { isUp: false, daysLeft: null, expiresAt: null, issuer: null, subject: null, altNames: null, responseTime: 0, error: guard.error }
+    if (!guard.ok) return { isUp: false, daysLeft: null, expiresAt: null, issuer: null, subject: null, altNames: null, tlsVersion: null, cipher: null, chainLength: null, responseTime: 0, error: guard.error }
   }
   return new Promise(resolve => {
     const socket = tls.connect({ host, port, servername: host, rejectUnauthorized: !cfg.allow_self_signed, timeout: cfg.timeout || 10000 }, () => {
-      const cert: any = socket.getPeerCertificate()
+      const cert: any = socket.getPeerCertificate(true)
+      const tlsVersion: string | null = (socket as any).getProtocol ? (socket as any).getProtocol() : null
+      const cipherObj: any = (socket as any).getCipher ? (socket as any).getCipher() : null
+      const cipher: string | null = cipherObj?.name || null
+      let chainLength: number | null = null
+      try {
+        let cur: any = cert
+        let len = 0
+        const seen = new Set<string>()
+        while (cur && Object.keys(cur).length && !seen.has(cur.fingerprint || '')) {
+          len++
+          if (cur.fingerprint) seen.add(cur.fingerprint)
+          cur = cur.issuerCertificate
+          if (cur && cur === cert) break
+        }
+        chainLength = len || null
+      } catch { chainLength = null }
       if (cert && Object.keys(cert).length) {
         const expiresAt = new Date(cert.valid_to).toISOString()
         const daysLeft = Math.round((new Date(cert.valid_to).getTime() - Date.now()) / 86400000)
@@ -405,13 +422,13 @@ async function checkSslLogic(monitor: Monitor): Promise<{ isUp: boolean; daysLef
           }
         }
         socket.end()
-        resolve({ isUp, daysLeft, expiresAt, issuer: cert.issuer?.O || null, subject: cert.subject?.CN || null, altNames: cert.subjectaltname || null, responseTime: Date.now() - start, error })
+        resolve({ isUp, daysLeft, expiresAt, issuer: cert.issuer?.O || null, subject: cert.subject?.CN || null, altNames: cert.subjectaltname || null, tlsVersion, cipher, chainLength, responseTime: Date.now() - start, error })
       } else {
-        socket.end(); resolve({ isUp: false, daysLeft: null, expiresAt: null, issuer: null, subject: null, altNames: null, responseTime: Date.now() - start, error: 'No certificate presented' })
+        socket.end(); resolve({ isUp: false, daysLeft: null, expiresAt: null, issuer: null, subject: null, altNames: null, tlsVersion, cipher, chainLength, responseTime: Date.now() - start, error: 'No certificate presented' })
       }
     })
-    socket.on('error', (e: any) => resolve({ isUp: false, daysLeft: null, expiresAt: null, issuer: null, subject: null, altNames: null, responseTime: Date.now() - start, error: e.code === 'CERT_HAS_EXPIRED' ? 'TLS certificate expired' : e.code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ? 'TLS self-signed certificate' : `TLS error: ${e.message}` }))
-    socket.on('timeout', () => { socket.destroy(); resolve({ isUp: false, daysLeft: null, expiresAt: null, issuer: null, subject: null, altNames: null, responseTime: Date.now() - start, error: 'SSL handshake timed out' }) })
+    socket.on('error', (e: any) => resolve({ isUp: false, daysLeft: null, expiresAt: null, issuer: null, subject: null, altNames: null, tlsVersion: null, cipher: null, chainLength: null, responseTime: Date.now() - start, error: e.code === 'CERT_HAS_EXPIRED' ? 'TLS certificate expired' : e.code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ? 'TLS self-signed certificate' : `TLS error: ${e.message}` }))
+    socket.on('timeout', () => { socket.destroy(); resolve({ isUp: false, daysLeft: null, expiresAt: null, issuer: null, subject: null, altNames: null, tlsVersion: null, cipher: null, chainLength: null, responseTime: Date.now() - start, error: 'SSL handshake timed out' }) })
   })
 }
 
@@ -552,6 +569,8 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
   let responseTime: number | null = null
   let responseSize: number | null = null
   let daysLeft: number | null = null
+  let httpHeaders: Record<string, any> | null = null
+  let security: any = null
   const cfg = monitor.config || {}
 
   if (type === 'tcp') {
@@ -574,7 +593,25 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
       const r = await checkHttpLogic(monitor, vars); isUp = r.isUp; statusCode = r.status; responseTime = r.r.totalTime; errorMessage = r.error
       dnsTime = r.r.dnsTime; tcpTime = r.r.tcpTime; tlsTime = r.r.tlsTime; ttfb = r.r.ttfb
       try { responseSize = r.r.body ? Buffer.byteLength(r.r.body, 'utf8') : null } catch { responseSize = r.r.body ? r.r.body.length : null }
+      httpHeaders = r.r.headers || null
     }
+  }
+  if (cfg.security_inspector && httpHeaders) {
+    try {
+      let tlsInfo: any = {}
+      if (monitor.url.startsWith('https://')) {
+        const sslRes = await checkSslLogic(monitor)
+        tlsInfo = { version: sslRes.tlsVersion, cipher: sslRes.cipher, daysLeft: sslRes.daysLeft, chainLength: sslRes.chainLength }
+      }
+      security = assessSecurity(httpHeaders, tlsInfo)
+    } catch {}
+  } else if (type === 'ssl') {
+    // Also assess SSL monitors directly
+    try {
+      // For ssl monitors, httpHeaders may be null, assess purely TLS
+      const tmp = await checkSslLogic(monitor)
+      security = assessSecurity({}, { version: tmp.tlsVersion, cipher: tmp.cipher, daysLeft: tmp.daysLeft, chainLength: tmp.chainLength })
+    } catch {}
   }
 
   const regions = cfg.regions || []
@@ -612,7 +649,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
     // Single host simulation: replicate the single probe result to each region
     const perRegionResults: Array<{ region: string; isUp: boolean }> = []
     for (const r of targetRegions) {
-      const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, outage_hint: r }, r)
+      const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, responseSize, security, outage_hint: r }, r)
       checks.push(c)
       perRegionResults.push({ region: r, isUp })
     }
@@ -621,7 +658,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
     outageType = quorum.outageType
   } else if (isDistributedWorker) {
     // Distributed: store single region check, then evaluate quorum from recent per-region checks
-    const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft }, workerRegion)
+    const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, responseSize, security }, workerRegion)
     checks.push(c)
     // Fetch latest per-region status within 2 intervals to compute quorum
     try {
@@ -642,7 +679,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
       overallUp = isUp
     }
   } else {
-    const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft })
+    const c = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft, responseSize, security })
     checks.push(c)
     overallUp = isUp
   }
@@ -783,19 +820,19 @@ export async function getMonitorStats(monitorId: string, days: number) {
     const rows = await rolledSeries(monitorId, since)
     if (rows.length === 0) {
       const { uptime, total } = await bucketedUptime(monitorId, since)
-      return { uptime, avgResponseTime: null, p50: null, p75: null, p90: null, p95: null, p99: null, p99_9: null, min: null, max: null, errorRate: null, totalChecks: total, checks: [] }
+      return { uptime, avgResponseTime: null, p50: null, p75: null, p90: null, p95: null, p99: null, p99_9: null, min: null, max: null, errorRate: null, avgResponseSize: null, totalChecks: total, checks: [] }
     }
     return { ...buildStats(rows), totalChecks: rows.length, checks: rows }
   }
-  const { data: checks } = await supabase.from('checks').select('is_up, response_time, dns_time, tcp_time, tls_time, ttfb, status_code, checked_at')
+  const { data: checks } = await supabase.from('checks').select('is_up, response_time, dns_time, tcp_time, tls_time, ttfb, status_code, extra, checked_at')
     .eq('monitor_id', monitorId).gte('checked_at', since.toISOString()).order('checked_at', { ascending: true })
-  if (!checks || checks.length === 0) return { uptime: null, avgResponseTime: null, p50: null, p75: null, p90: null, p95: null, p99: null, p99_9: null, min: null, max: null, errorRate: null, totalChecks: 0, checks: [] }
+  if (!checks || checks.length === 0) return { uptime: null, avgResponseTime: null, p50: null, p75: null, p90: null, p95: null, p99: null, p99_9: null, min: null, max: null, errorRate: null, avgResponseSize: null, totalChecks: 0, checks: [] }
   return buildStats(checks)
 }
 
 function buildStats(checks: any[]) {
   const ups = checks.filter(c => c.is_up).length
-  const uptime = Math.round((ups / checks.length) * 10000) / 100
+  const uptime = checks.length ? Math.round((ups / checks.length) * 10000) / 100 : null
   const rts = checks.filter(c => c.response_time !== null).map(c => c.response_time!)
   const avg = rts.length ? Math.round(rts.reduce((a, b) => a + b, 0) / rts.length) : null
   const alarms = checks.filter(c => !c.is_up).length
@@ -803,6 +840,7 @@ function buildStats(checks: any[]) {
   const dnsTs = checks.filter(c => c.dns_time !== null).map(c => c.dns_time!)
   const tcpTs = checks.filter(c => c.tcp_time !== null).map(c => c.tcp_time!)
   const tlsTs = checks.filter(c => c.tls_time !== null).map(c => c.tls_time!)
+  const sizes = checks.map(c => (c.extra && typeof c.extra.responseSize === 'number' ? c.extra.responseSize : null)).filter((v: any) => v !== null) as number[]
   return {
     uptime, avgResponseTime: avg,
     p50: percentile(rts, 50), p75: percentile(rts, 75), p90: percentile(rts, 90), p95: percentile(rts, 95), p99: percentile(rts, 99), p99_9: percentile(rts, 99.9),
@@ -812,28 +850,64 @@ function buildStats(checks: any[]) {
     avgTcp: tcpTs.length ? Math.round(tcpTs.reduce((a, b) => a + b, 0) / tcpTs.length) : null,
     avgTls: tlsTs.length ? Math.round(tlsTs.reduce((a, b) => a + b, 0) / tlsTs.length) : null,
     avgTtfb: ttfbs.length ? Math.round(ttfbs.reduce((a, b) => a + b, 0) / ttfbs.length) : null,
+    avgResponseSize: sizes.length ? Math.round(sizes.reduce((a, b) => a + b, 0) / sizes.length) : null,
+    successRate: checks.length ? Math.round((ups / checks.length) * 10000) / 100 : null,
     totalChecks: checks.length, checks
   }
 }
 
 export async function getMonitorReport(monitorId: string) {
+  const { data: monitor } = await supabase.from('monitors').select('*').eq('id', monitorId).single()
   const windows = [
-    { label: '1h', hours: 1 }, { label: '24h', hours: 24 }, { label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }, { label: '365d', days: 365 }
+    { label: '1h', hours: 1 }, { label: '24h', hours: 24 }, { label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }, { label: '180d', days: 180 }, { label: '365d', days: 365 }
   ]
   const checksRetentionMs = RETENTION.checksDays * 86400000
   const uptimeByWindow: Record<string, number | null> = {}
+  const downtimeMsByWindow: Record<string, number | null> = {}
+  const slaAllowedByWindow: Record<string, number | null> = {}
+  const slaAchievedByWindow: Record<string, number | null> = {}
+  const slaTarget = Number((monitor as any)?.config?.sla_target || (monitor as any)?.sla_target || 99.9)
   for (const w of windows) {
     const since = new Date()
     if (w.hours) since.setHours(since.getHours() - w.hours)
     else since.setDate(since.getDate() - (w.days || 0))
-    if (Date.now() - since.getTime() <= checksRetentionMs) {
+    const windowMs = Date.now() - since.getTime()
+    let uptime: number | null = null
+    if (windowMs <= checksRetentionMs) {
       const { data } = await supabase.from('checks').select('is_up').eq('monitor_id', monitorId).gte('checked_at', since.toISOString())
-      uptimeByWindow[w.label] = data && data.length ? Math.round((data.filter(c => c.is_up).length / data.length) * 10000) / 100 : null
+      uptime = data && data.length ? Math.round((data.filter(c => c.is_up).length / data.length) * 10000) / 100 : null
     } else {
-      uptimeByWindow[w.label] = (await bucketedUptime(monitorId, since)).uptime
+      uptime = (await bucketedUptime(monitorId, since)).uptime
+    }
+    uptimeByWindow[w.label] = uptime
+    if (uptime !== null) {
+      const downtime = Math.round(windowMs * (1 - uptime / 100))
+      downtimeMsByWindow[w.label] = downtime
+      slaAllowedByWindow[w.label] = Math.round(windowMs * (1 - slaTarget / 100))
+      slaAchievedByWindow[w.label] = uptime
+    } else {
+      downtimeMsByWindow[w.label] = null
+      slaAllowedByWindow[w.label] = Math.round(windowMs * (1 - slaTarget / 100))
+      slaAchievedByWindow[w.label] = null
     }
   }
-  const { data: monitor } = await supabase.from('monitors').select('*').eq('id', monitorId).single()
+  // All-time window
+  {
+    const createdAt = (monitor as any)?.created_at ? new Date((monitor as any).created_at).getTime() : null
+    const sinceAll = createdAt ? new Date(createdAt) : new Date(Date.now() - 365 * 86400000)
+    const windowMsAll = Date.now() - sinceAll.getTime()
+    let uptimeAll: number | null = null
+    if (windowMsAll <= checksRetentionMs) {
+      const { data } = await supabase.from('checks').select('is_up').eq('monitor_id', monitorId).gte('checked_at', sinceAll.toISOString())
+      uptimeAll = data && data.length ? Math.round((data.filter(c => c.is_up).length / data.length) * 10000) / 100 : null
+    } else {
+      uptimeAll = (await bucketedUptime(monitorId, sinceAll)).uptime
+    }
+    uptimeByWindow['all'] = uptimeAll
+    downtimeMsByWindow['all'] = uptimeAll !== null ? Math.round(windowMsAll * (1 - uptimeAll / 100)) : null
+    slaAllowedByWindow['all'] = Math.round(windowMsAll * (1 - slaTarget / 100))
+    slaAchievedByWindow['all'] = uptimeAll
+  }
   const days = 90
   const since = new Date(); since.setDate(since.getDate() - days)
   const today = new Date().toISOString().slice(0, 10)
@@ -854,8 +928,14 @@ export async function getMonitorReport(monitorId: string) {
   const durations = incArr.filter(i => i.resolved_at).map(i => (new Date(i.resolved_at).getTime() - new Date(i.started_at).getTime()) / 60000)
   const acknowledged = incArr.filter(i => i.acknowledged_at)
   const mttaArr = acknowledged.map(i => (new Date(i.acknowledged_at).getTime() - new Date(i.started_at).getTime()) / 60000)
-  const sla = (monitor as any)?.config?.sla_target || 99.9
+  const sla = slaTarget
   const errorBudget = sla - (stats.uptime ?? 100)
+  const windowMs90 = 90 * 86400000
+  const downtimeMs90 = downtimeMsByWindow['90d']
+  const totalDownMin = durations.reduce((a, b) => a + b, 0)
+  const uptimeMs90 = downtimeMs90 !== null ? windowMs90 - downtimeMs90 : null
+  const mtbfMin = incArr.length > 0 && uptimeMs90 !== null ? Math.round((uptimeMs90 / 60000 / Math.max(1, incArr.length)) * 10) / 10 : null
+  const availability90 = uptimeByWindow['90d']
 
   const dayMap = new Map<string, { up: number; total: number; rts: number[] }>()
   const addDay = (day: string, isUp: boolean, rt: number | null) => {
@@ -886,6 +966,11 @@ export async function getMonitorReport(monitorId: string) {
     incidentDurationAvg: durations.length ? Math.round((durations.reduce((a, b) => a + b, 0) / durations.length) * 10) / 10 : null,
     mtta: mttaArr.length ? Math.round((mttaArr.reduce((a, b) => a + b, 0) / mttaArr.length) * 10) / 10 : null,
     mttr: durations.length ? Math.round((durations.reduce((a, b) => a + b, 0) / durations.length) * 10) / 10 : null,
+    mtbf: mtbfMin,
+    availability: availability90,
+    downtimeMs: downtimeMsByWindow,
+    slaAllowedMs: slaAllowedByWindow,
+    slaAchieved: slaAchievedByWindow,
     errorBudget: Math.round(errorBudget * 100) / 100,
     slaTarget: sla, daily
   }

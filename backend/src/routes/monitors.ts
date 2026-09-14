@@ -46,6 +46,16 @@ router.get('/available-regions', async (_req: AuthenticatedRequest, res: Respons
   res.json(data)
 })
 
+router.get('/:id/security', async (req: AuthenticatedRequest, res: Response) => {
+  const { data: monitor } = await supabase.from('monitors').select('id, url, type, config').eq('id', req.params.id).eq('user_id', req.user!.id).single()
+  if (!monitor) return res.status(404).json({ error: 'Monitor not found' })
+  const { data: latest } = await supabase.from('checks').select('extra, checked_at, status_code').eq('monitor_id', req.params.id).order('checked_at', { ascending: false }).limit(1).maybeSingle()
+  const stored = (latest as any)?.extra?.security
+  if (stored) return res.json({ ...stored, checked_at: (latest as any).checked_at })
+  // Fallback: no stored security – try live assessment for https monitors
+  res.json(null)
+})
+
 router.get('/', async (req: AuthenticatedRequest, res: Response) => {
   const { data, error } = await supabase
     .from('monitors')

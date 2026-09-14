@@ -372,6 +372,19 @@ export default function MonitorForm() {
             </select>
           </div>
         </div>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div>
+            <label className="label">SLA target</label>
+            <select className="input" value={cfg.sla_target || 99.9} onChange={e => setCfg({ sla_target: parseFloat(e.target.value) })}>
+              <option value={99}>99%</option><option value={99.5}>99.5%</option><option value={99.9}>99.9%</option><option value={99.95}>99.95%</option><option value={99.99}>99.99%</option>
+            </select>
+          </div>
+          <div className="flex items-end"><p className="text-xs text-surface-500">Used for error-budget and downtime allowance in the report.</p></div>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-surface-300">
+          <input type="checkbox" checked={!!cfg.security_inspector} onChange={e => setCfg({ security_inspector: e.target.checked })} className="accent-brand-500" />
+          Enable Security Inspector — score TLS + HSTS/CSP/X-Frame etc. per check
+        </label>
 
         <div>
           <label className="label">Parent dependency</label>
