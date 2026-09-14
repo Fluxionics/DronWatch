@@ -7,7 +7,9 @@ import zlib from 'zlib'
 import crypto from 'crypto'
 import { supabase } from '../config/supabase'
 import { Monitor, Check } from '../types'
-import { sendAlert } from './alertService'
+import { sendAlert, sendSubscriberEmail } from './alertService'
+import { evaluateAlertRules } from './alertRules'
+import { rolledSeries, bucketedUptime, RETENTION } from './retention'
 
 interface RawResult {
   dnsTime: number | null
@@ -23,6 +25,10 @@ interface RawResult {
 
 const lastAlertAt: Map<string, number> = new Map()
 const lastHashes: Map<string, string> = new Map()
+
+export function checkRegion(): string {
+  return process.env.REGION || 'self'
+}
 
 function percentile(arr: number[], p: number): number | null {
   if (arr.length === 0) return null
@@ -524,6 +530,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
   let tlsTime: number | null = null
   let ttfb: number | null = null
   let responseTime: number | null = null
+  let daysLeft: number | null = null
   const cfg = monitor.config || {}
 
   if (type === 'tcp') {
@@ -535,7 +542,7 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
   } else if (type === 'heartbeat') {
     const r = await checkHeartbeatLogic(monitor); isUp = r.isUp; errorMessage = r.error
   } else if (type === 'ssl') {
-    const r = await checkSslLogic(monitor); isUp = r.isUp; responseTime = r.responseTime; errorMessage = r.error; tlsTime = r.responseTime
+    const r = await checkSslLogic(monitor); isUp = r.isUp; responseTime = r.responseTime; errorMessage = r.error; tlsTime = r.responseTime; daysLeft = r.daysLeft
     if (isUp && cfg.warn_days && r.daysLeft !== null && r.daysLeft <= cfg.warn_days) errorMessage = `Certificate expires in ${r.daysLeft} days`
   } else if (type === 'domain') {
     const r = await checkDomainLogic(monitor); isUp = r.isUp; responseTime = r.responseTime; errorMessage = r.error; dnsTime = r.responseTime
@@ -563,14 +570,21 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
     }
   }
 
-  const check = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb })
+  const check = await recordCheck(monitor, statusCode, responseTime, errorMessage, isUp, false, { dnsTime, tcpTime, tlsTime, ttfb }, { daysLeft })
 
   const prev = monitor.last_status
-  await supabase.from('monitors').update({ last_check: new Date().toISOString(), last_status: isUp, last_latency: responseTime }).eq('id', monitor.id)
+  const now = new Date().toISOString()
+
+  const latencyThreshold = cfg.latency_threshold || 1000
+  const nextConsecutiveDown = isUp ? 0 : (monitor.consecutive_down || 0) + 1
+  const nextConsecutiveLatency = isUp && responseTime !== null && responseTime !== undefined && responseTime > latencyThreshold ? (monitor.consecutive_latency || 0) + 1 : 0
+  await supabase.from('monitors').update({ last_check: now, last_status: isUp, last_latency: responseTime, consecutive_down: nextConsecutiveDown, consecutive_latency: nextConsecutiveLatency }).eq('id', monitor.id)
 
   const { data: silence } = await supabase.from('silences').select('id').eq('user_id', monitor.user_id)
-    .or(`monitor_id.eq.${monitor.id},monitor_id.is.null`).gte('ends_at', new Date().toISOString()).limit(1).maybeSingle()
+    .or(`monitor_id.eq.${monitor.id},monitor_id.is.null`).gte('ends_at', now).limit(1).maybeSingle()
   const isSilenced = !!silence
+
+  await evaluateAlertRules(monitor.id, monitor, { isUp, responseTime, intervalSeconds: monitor.check_interval, extra: { daysLeft }, silenced: isSilenced })
 
   const changed = prev !== null && prev !== isUp
   if (changed && !isSilenced) {
@@ -590,11 +604,11 @@ export async function checkMonitor(monitor: Monitor): Promise<Check> {
   return check
 }
 
-async function recordCheck(monitor: Monitor, statusCode: number | null, responseTime: number | null, errorMessage: string | null, isUp: boolean, additive: boolean, timing?: { dnsTime?: number | null; tcpTime?: number | null; tlsTime?: number | null; ttfb?: number | null }): Promise<Check> {
+async function recordCheck(monitor: Monitor, statusCode: number | null, responseTime: number | null, errorMessage: string | null, isUp: boolean, additive: boolean, timing?: { dnsTime?: number | null; tcpTime?: number | null; tlsTime?: number | null; ttfb?: number | null }, extra?: Record<string, any>): Promise<Check> {
   const { data: check, error } = await supabase.from('checks').insert({
     monitor_id: monitor.id, status_code: statusCode, response_time: responseTime,
     dns_time: timing?.dnsTime ?? null, tcp_time: timing?.tcpTime ?? null, tls_time: timing?.tlsTime ?? null, ttfb: timing?.ttfb ?? null,
-    is_up: isUp, error_message: errorMessage
+    is_up: isUp, error_message: errorMessage, region: checkRegion(), extra: extra || null
   }).select().single()
   if (error) throw new Error(`Failed to save check: ${error.message}`)
   return check as Check
@@ -629,10 +643,47 @@ async function handleStatusChange(monitor: Monitor, isUp: boolean, statusCode: n
   for (const channel of monitor.notification_channels || []) {
     await sendAlert({ monitorId: monitor.id, type: channel.type as any, recipient: channel.target, message, status })
   }
+  await notifyStatusPageSubscribers(monitor, isUp, detail)
+}
+
+async function notifyStatusPageSubscribers(monitor: Monitor, isUp: boolean, detail: string) {
+  try {
+    const { data: pages } = await supabase.from('status_pages').select('id, name, slug, subscriptions_enabled').contains('monitor_ids', [monitor.id]).eq('is_public', true)
+    for (const page of pages || []) {
+      if (page.subscriptions_enabled === false) continue
+      const { data: subs } = await supabase.from('status_page_subscribers').select('id, email, token').eq('status_page_id', page.id).eq('verified', true).limit(5000)
+      if (!subs || subs.length === 0) continue
+      const pageUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/status/${encodeURIComponent(page.slug)}`
+      const statusText = isUp ? 'UP' : 'DOWN'
+      const color = isUp ? '#10b981' : '#ef4444'
+      const headline = isUp ? `${page.name} is back online` : `${page.name} is currently DOWN`
+      for (const row of subs) {
+        try {
+          await sendSubscriberEmail(row.email, `${page.name} — Service ${statusText}`, `<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="background:${color};padding:20px;border-radius:8px 8px 0 0"><h2 style="color:white;margin:0">${headline}</h2></div><div style="padding:20px;background:#f9fafb;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px"><p style="color:#374151;white-space:pre-wrap">${escapeHtml(detail)}</p><a href="${pageUrl}" style="display:inline-block;background:#3b82f6;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;margin-top:16px">View Status Page</a><p style="color:#9ca3af;font-size:12px;margin-top:24px">You received this because you subscribed to this status page. <a href="${pageUrl}?unsubscribe=1">Unsubscribe</a></p></div></div>`)
+        } catch (err) {
+          console.error(`Subscriber email failed for ${row.email}`, err)
+        }
+      }
+    }
+  } catch (err) {
+    console.error('notifyStatusPageSubscribers failed', err)
+  }
+}
+
+function escapeHtml(s: any): string {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
 export async function getMonitorStats(monitorId: string, days: number) {
   const since = new Date(); since.setDate(since.getDate() - days)
+  if (days > RETENTION.checksDays) {
+    const rows = await rolledSeries(monitorId, since)
+    if (rows.length === 0) {
+      const { uptime, total } = await bucketedUptime(monitorId, since)
+      return { uptime, avgResponseTime: null, p50: null, p75: null, p90: null, p95: null, p99: null, p99_9: null, min: null, max: null, errorRate: null, totalChecks: total, checks: [] }
+    }
+    return { ...buildStats(rows), totalChecks: rows.length, checks: rows }
+  }
   const { data: checks } = await supabase.from('checks').select('is_up, response_time, dns_time, tcp_time, tls_time, ttfb, status_code, checked_at')
     .eq('monitor_id', monitorId).gte('checked_at', since.toISOString()).order('checked_at', { ascending: true })
   if (!checks || checks.length === 0) return { uptime: null, avgResponseTime: null, p50: null, p75: null, p90: null, p95: null, p99: null, p99_9: null, min: null, max: null, errorRate: null, totalChecks: 0, checks: [] }
@@ -666,21 +717,34 @@ export async function getMonitorReport(monitorId: string) {
   const windows = [
     { label: '1h', hours: 1 }, { label: '24h', hours: 24 }, { label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }, { label: '365d', days: 365 }
   ]
+  const checksRetentionMs = RETENTION.checksDays * 86400000
   const uptimeByWindow: Record<string, number | null> = {}
   for (const w of windows) {
     const since = new Date()
     if (w.hours) since.setHours(since.getHours() - w.hours)
     else since.setDate(since.getDate() - (w.days || 0))
-    const { data } = await supabase.from('checks').select('is_up').eq('monitor_id', monitorId).gte('checked_at', since.toISOString())
-    uptimeByWindow[w.label] = data && data.length ? Math.round((data.filter(c => c.is_up).length / data.length) * 10000) / 100 : null
+    if (Date.now() - since.getTime() <= checksRetentionMs) {
+      const { data } = await supabase.from('checks').select('is_up').eq('monitor_id', monitorId).gte('checked_at', since.toISOString())
+      uptimeByWindow[w.label] = data && data.length ? Math.round((data.filter(c => c.is_up).length / data.length) * 10000) / 100 : null
+    } else {
+      uptimeByWindow[w.label] = (await bucketedUptime(monitorId, since)).uptime
+    }
   }
   const { data: monitor } = await supabase.from('monitors').select('*').eq('id', monitorId).single()
   const days = 90
   const since = new Date(); since.setDate(since.getDate() - days)
-  const { data: checks } = await supabase.from('checks').select('is_up, response_time, dns_time, tcp_time, tls_time, ttfb, status_code, checked_at').eq('monitor_id', monitorId).gte('checked_at', since.toISOString()).order('checked_at', { ascending: true })
-  const stats = buildStats(checks || [])
+  const today = new Date().toISOString().slice(0, 10)
+
+  let checks: Array<Record<string, any>>
+  if (days <= RETENTION.checksDays) {
+    const { data } = await supabase.from('checks').select('is_up, response_time, dns_time, tcp_time, tls_time, ttfb, status_code, checked_at').eq('monitor_id', monitorId).gte('checked_at', since.toISOString()).order('checked_at', { ascending: true })
+    checks = data || []
+  } else {
+    checks = await rolledSeries(monitorId, since)
+  }
+  const stats = buildStats(checks)
   const errorsByCode: Record<string, number> = {}
-  for (const c of checks || []) { if (c.status_code) errorsByCode[String(c.status_code)] = (errorsByCode[String(c.status_code)] || 0) + 1 }
+  for (const c of checks) { if (c.status_code) errorsByCode[String(c.status_code)] = (errorsByCode[String(c.status_code)] || 0) + 1 }
 
   const { data: incidents } = await supabase.from('incidents').select('*').eq('monitor_id', monitorId).gte('started_at', since.toISOString())
   const incArr = incidents || []
@@ -690,15 +754,28 @@ export async function getMonitorReport(monitorId: string) {
   const sla = (monitor as any)?.config?.sla_target || 99.9
   const errorBudget = sla - (stats.uptime ?? 100)
 
-  const daily: Array<{ date: string; uptime: number; avg: number | null }> = []
   const dayMap = new Map<string, { up: number; total: number; rts: number[] }>()
-  for (const c of checks || []) {
-    const d = new Date(c.checked_at).toISOString().slice(0, 10)
-    if (!dayMap.has(d)) dayMap.set(d, { up: 0, total: 0, rts: [] })
-    const e = dayMap.get(d)!
-    e.total++; if (c.is_up) e.up++; if (c.response_time !== null) e.rts.push(c.response_time)
+  const addDay = (day: string, isUp: boolean, rt: number | null) => {
+    const e = dayMap.get(day) ?? { up: 0, total: 0, rts: [] }
+    e.total++; if (isUp) e.up++; if (rt !== null && rt !== undefined) e.rts.push(rt)
+    dayMap.set(day, e)
   }
-  for (const [d, e] of dayMap) daily.push({ date: d, uptime: Math.round((e.up / e.total) * 10000) / 100, avg: e.rts.length ? Math.round(e.rts.reduce((a, b) => a + b, 0) / e.rts.length) : null })
+  for (const c of checks) {
+    const day = new Date(c.checked_at).toISOString().slice(0, 10)
+    if (day === today) addDay(day, c.is_up === true, c.response_time)
+  }
+  const { data: dStats } = await supabase.from('daily_stats').select('bucket, check_count, down_count, avg_response_ms').eq('monitor_id', monitorId).gte('bucket', since.toISOString()).order('bucket', { ascending: true })
+  for (const d of dStats || []) {
+    const day = new Date(d.bucket).toISOString().slice(0, 10)
+    const e = dayMap.get(day) ?? { up: 0, total: 0, rts: [] }
+    e.total += d.check_count ?? 0
+    e.up += (d.check_count ?? 0) - (d.down_count ?? 0)
+    if (d.avg_response_ms !== null && d.avg_response_ms !== undefined) e.rts.push(d.avg_response_ms)
+    dayMap.set(day, e)
+  }
+  const daily = Array.from(dayMap.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([date, e]) => ({
+    date, uptime: e.total > 0 ? Math.round((e.up / e.total) * 10000) / 100 : null, avg: e.rts.length ? Math.round(e.rts.reduce((a, b) => a + b, 0) / e.rts.length) : null
+  }))
 
   return {
     windows: uptimeByWindow, stats,
@@ -709,6 +786,27 @@ export async function getMonitorReport(monitorId: string) {
     errorBudget: Math.round(errorBudget * 100) / 100,
     slaTarget: sla, daily
   }
+}
+
+export async function getMonitorRegions(monitorId: string) {
+  const { data: regions } = await supabase.from('regions').select('code, label').order('code', { ascending: true })
+  const since = new Date(Date.now() - 86400000).toISOString()
+  const out: Array<{ code: string; label: string; last_status: boolean | null; last_check: string | null; last_latency: number | null; uptime_24h: number | null }> = []
+  for (const reg of regions || []) {
+    const { data: latest } = await supabase.from('checks').select('is_up, response_time, checked_at').eq('monitor_id', monitorId).eq('region', reg.code).order('checked_at', { ascending: false }).limit(1)
+    const [{ count: total }, { count: up }] = await Promise.all([
+      supabase.from('checks').select('id', { count: 'exact', head: true }).eq('monitor_id', monitorId).eq('region', reg.code).gte('checked_at', since),
+      supabase.from('checks').select('id', { count: 'exact', head: true }).eq('monitor_id', monitorId).eq('region', reg.code).eq('is_up', true).gte('checked_at', since)
+    ])
+    out.push({
+      code: reg.code, label: reg.label,
+      last_status: latest?.[0]?.is_up ?? null,
+      last_check: latest?.[0]?.checked_at ?? null,
+      last_latency: latest?.[0]?.response_time ?? null,
+      uptime_24h: total ? Math.round(((up ?? 0) / total) * 10000) / 100 : null
+    })
+  }
+  return out
 }
 
 export async function getDowntimeEvents(monitorId: string) {

@@ -435,3 +435,97 @@ create policy rls_status_page_subscribers_update on status_page_subscribers for 
 drop policy if exists rls_status_page_subscribers_delete on status_page_subscribers;
 create policy rls_status_page_subscribers_delete on status_page_subscribers for delete to authenticated
   using (exists (select 1 from status_pages s where s.id = status_page_subscribers.status_page_id and s.user_id = auth.uid()));
+
+-- =====================================================================
+-- Plans, alert rules, retention rollups, multi-region
+-- =====================================================================
+
+alter table users add column if not exists plan text not null default 'free';
+
+alter table monitors add column if not exists consecutive_down integer not null default 0;
+alter table monitors add column if not exists consecutive_latency integer not null default 0;
+
+alter table checks add column if not exists region text not null default 'self';
+alter table checks add column if not exists extra jsonb;
+
+create table if not exists alert_rules (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid not null references users(id) on delete cascade,
+  monitor_id uuid not null references monitors(id) on delete cascade,
+  name text not null,
+  condition text not null,
+  threshold integer not null,
+  for_minutes integer not null default 0,
+  channels jsonb not null default '[]',
+  enabled boolean not null default true,
+  consecutive integer not null default 0,
+  last_fired_at timestamptz,
+  last_ok_at timestamptz,
+  created_at timestamptz not null default now()
+);
+alter table alert_rules drop constraint if exists alert_rules_condition_check;
+alter table alert_rules add constraint alert_rules_condition_check check (condition in ('down_for','latency_above','ssl_expires_within'));
+
+create table if not exists hourly_stats (
+  id uuid primary key default uuid_generate_v4(),
+  monitor_id uuid not null references monitors(id) on delete cascade,
+  region text not null default 'self',
+  bucket timestamptz not null,
+  check_count integer not null default 0,
+  down_count integer not null default 0,
+  avg_response_ms numeric,
+  last_status boolean,
+  unique (monitor_id, region, bucket)
+);
+
+create table if not exists daily_stats (
+  id uuid primary key default uuid_generate_v4(),
+  monitor_id uuid not null references monitors(id) on delete cascade,
+  region text not null default 'self',
+  bucket timestamptz not null,
+  check_count integer not null default 0,
+  down_count integer not null default 0,
+  avg_response_ms numeric,
+  last_status boolean,
+  unique (monitor_id, region, bucket)
+);
+
+create table if not exists regions (
+  code text primary key,
+  label text not null,
+  active boolean not null default true
+);
+insert into regions (code, label, active) values
+  ('self', 'Self-hosted', true),
+  ('us-east', 'US East', true),
+  ('us-west', 'US West', true),
+  ('mx', 'Mexico', true),
+  ('br', 'Brazil', true),
+  ('de', 'Germany', true),
+  ('sg', 'Singapore', true),
+  ('au', 'Australia', true),
+  ('jp', 'Japan', true)
+on conflict (code) do update set label = excluded.label;
+
+create index if not exists checks_checked_at_idx on checks(checked_at);
+create index if not exists checks_region_idx on checks(monitor_id, region, checked_at desc);
+create index if not exists hourly_stats_monitor_idx on hourly_stats(monitor_id, region, bucket);
+create index if not exists daily_stats_monitor_idx on daily_stats(monitor_id, region, bucket);
+create index if not exists alert_rules_monitor_idx on alert_rules(monitor_id);
+create index if not exists status_pages_domain_idx on status_pages(custom_domain);
+
+alter table alert_rules enable row level security;
+alter table hourly_stats enable row level security;
+alter table daily_stats enable row level security;
+alter table regions enable row level security;
+
+select policy_user_owned('alert_rules');
+
+drop policy if exists rls_hourly_stats_select on hourly_stats;
+create policy rls_hourly_stats_select on hourly_stats for select to authenticated
+  using (exists (select 1 from monitors m where m.id = hourly_stats.monitor_id and m.user_id = auth.uid()));
+drop policy if exists rls_daily_stats_select on daily_stats for select to authenticated
+  using (exists (select 1 from monitors m where m.id = daily_stats.monitor_id and m.user_id = auth.uid()));
+
+drop policy if exists rls_regions_select on regions;
+create policy rls_regions_select on regions for select to anon, authenticated using (true);

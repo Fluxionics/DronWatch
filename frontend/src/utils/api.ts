@@ -1,12 +1,16 @@
 import axios from 'axios'
 import { useAuthStore } from '../store/authStore'
 
-const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api'
-})
+function apiRoot(): string {
+  const root = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+  return root.endsWith('/api') ? root : `${root}/api`
+}
+
+const api = axios.create({})
 
 api.interceptors.request.use(config => {
   const token = useAuthStore.getState().accessToken
+  config.url = `${apiRoot()}${config.url}`
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
@@ -27,7 +31,7 @@ api.interceptors.response.use(
 
       try {
         const { data } = await axios.post(
-          `${import.meta.env.VITE_API_URL || ''}/api/auth/refresh`,
+          `${apiRoot()}/auth/refresh`,
           { refresh: refreshToken }
         )
         useAuthStore.getState().setTokens(data.access, data.refresh)

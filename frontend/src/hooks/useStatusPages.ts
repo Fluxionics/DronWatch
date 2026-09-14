@@ -36,6 +36,18 @@ export function usePublicStatusPage(slug: string) {
   })
 }
 
+export function usePublicStatusPageByDomain(domain: string) {
+  return useQuery({
+    queryKey: ['public-status-domain', domain],
+    queryFn: async () => {
+      const { data } = await api.get(`/api/status-pages/domain/${domain}`)
+      return data
+    },
+    enabled: !!domain,
+    refetchInterval: 60_000
+  })
+}
+
 export function useCreateStatusPage() {
   const qc = useQueryClient()
   return useMutation({

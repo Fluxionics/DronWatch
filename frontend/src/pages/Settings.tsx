@@ -254,14 +254,7 @@ export default function Settings() {
         </form>
       </section>
 
-      <section className="card">
-        <h2 className="font-semibold text-surface-100 mb-4">Plan</h2>
-        <p className="text-sm text-surface-400">
-          Everything is <span className="text-emerald-400 font-medium">free forever</span>. No limits on
-          monitors, status pages, or check history. The premium features other tools charge for are
-          included in the free plan.
-        </p>
-      </section>
+      <PlanSection />
 
       <EnvVarsSection />
       <ReportsSection />
@@ -293,6 +286,74 @@ export default function Settings() {
         </button>
       </section>
     </div>
+  )
+}
+
+function PlanSection() {
+  const { user, setAuth, accessToken, refreshToken } = useAuthStore()
+  const qc = useQueryClient()
+  const { data: profile } = useQuery({ queryKey: ['user', 'profile'], queryFn: async () => { const { data } = await api.get('/api/user/profile'); return data as User } })
+  const { data: plans } = useQuery({ queryKey: ['user', 'plans'], queryFn: async () => { const { data } = await api.get('/api/user/plans'); return data as Array<{ name: string; limits: any }> } })
+  const current = (profile?.plan || user?.plan || 'free') as string
+
+  const change = useMutation({
+    mutationFn: async (plan: string) => {
+      const { data } = await api.put('/api/user/plan', { plan })
+      return data as { id: string; plan: string }
+    },
+    onSuccess: (data) => {
+      if (user) {
+        setAuth({ ...user, plan: data.plan as User['plan'] }, accessToken!, refreshToken!)
+      }
+      qc.invalidateQueries({ queryKey: ['user', 'profile'] })
+      toast.success(`Switched to ${data.plan} plan`)
+    },
+    onError: (err: any) => {
+      toast.error(err.response?.data?.error || 'Failed to change plan')
+    }
+  })
+
+  const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k` : n
+
+  return (
+    <section className="card">
+      <h2 className="font-semibold text-surface-100 mb-1">Plan</h2>
+      <p className="text-sm text-surface-400 mb-4">
+        Current plan: <span className="text-brand-400 font-semibold capitalize">{current}</span>. Limits apply to
+        monitors, status pages, agents, and raw check history.
+      </p>
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {(plans || []).map(p => {
+          const active = p.name === current
+          return (
+            <button
+              key={p.name}
+              onClick={() => !active && change.mutate(p.name)}
+              disabled={active || change.isPending}
+              className={clsx(
+                'rounded-xl border p-4 text-left transition-colors',
+                active
+                  ? 'border-brand-500/60 bg-brand-500/10'
+                  : 'border-surface-800 bg-surface-900 hover:border-surface-600'
+              )}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-semibold capitalize text-surface-100">{p.name}</span>
+                {active && <span className="text-[10px] font-medium text-brand-400 uppercase tracking-wide">Current</span>}
+              </div>
+              <ul className="space-y-1 text-xs text-surface-500">
+                <li>• {fmt(p.limits.monitors)} monitors</li>
+                <li>• {p.limits.min_interval}s min interval</li>
+                <li>• {fmt(p.limits.status_pages)} status pages</li>
+                <li>• {fmt(p.limits.agents)} agents</li>
+                <li>• {p.limits.history_days} days history</li>
+              </ul>
+            </button>
+          )
+        })}
+      </div>
+    </section>
   )
 }
 

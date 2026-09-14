@@ -7,6 +7,7 @@ import UptimeChart from '../components/UptimeChart'
 import ResponseTimeChart from '../components/ResponseTimeChart'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import clsx from 'clsx'
+import type { MonitorRegion } from '../types'
 import api from '../utils/api'
 
 export default function MonitorDetail() {
@@ -28,6 +29,15 @@ export default function MonitorDetail() {
     queryKey: ['monitor-report', id],
     queryFn: async () => { const { data } = await api.get(`/api/monitors/${id}/report`); return data },
     enabled: !!id
+  })
+  const { data: regions } = useQuery<MonitorRegion[]>({
+    queryKey: ['monitor-regions', id, days],
+    queryFn: async () => {
+      const { data } = await api.get(`/api/monitors/${id}/regions?days=${days}`)
+      return data
+    },
+    enabled: !!id,
+    refetchInterval: 60_000
   })
   const [reporting, setReporting] = useState(false)
 
@@ -236,6 +246,29 @@ export default function MonitorDetail() {
           <p className="text-sm text-surface-500 py-8 text-center">No data yet</p>
         )}
       </div>
+
+      {regions && regions.length > 0 && (
+        <div className="card">
+          <h2 className="font-semibold text-surface-100 mb-4">Regions</h2>
+          <div className="space-y-1">
+            {regions.map(region => (
+              <div key={region.code} className="flex items-center gap-3 py-1.5 text-sm border-b border-surface-800 last:border-0">
+                <span className={clsx(
+                  'w-1.5 h-1.5 rounded-full',
+                  region.last_status === true ? 'bg-emerald-400' : region.last_status === false ? 'bg-red-400' : 'bg-surface-600'
+                )} />
+                <span className="font-mono text-xs uppercase text-surface-400 w-10">{region.code}</span>
+                <span className="text-surface-200">{region.label}</span>
+                <span className="text-xs text-surface-500 ml-auto font-mono">{region.last_latency !== null && region.last_latency !== undefined ? `${region.last_latency}ms` : '—'}</span>
+                <span className="text-xs text-surface-500 w-20 text-right">{region.uptime_24h !== null && region.uptime_24h !== undefined ? `${region.uptime_24h}%` : '—'}</span>
+                <span className="text-xs text-surface-600 w-24 text-right">
+                  {region.last_check ? formatDistanceToNow(new Date(region.last_check), { addSuffix: true }) : 'never'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {downtime && downtime.length > 0 && (
         <div className="card">

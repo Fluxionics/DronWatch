@@ -2,6 +2,7 @@ import cron from 'node-cron'
 import { supabase } from '../config/supabase'
 import { checkMonitor, getMonitorReport } from '../services/monitorService'
 import { sendEmail } from '../services/alertService'
+import { rollupAndPrune } from '../services/retention'
 import { Monitor } from '../types'
 
 const lastCheckedAt: Map<string, number> = new Map()
@@ -86,7 +87,15 @@ export function startScheduler() {
     }
   })
 
-  console.log('Scheduler started (30s checks, hourly reports, minute log-pattern scan)')
+  cron.schedule('*/10 * * * *', async () => {
+    try {
+      await rollupAndPrune()
+    } catch (err) {
+      console.error('Retention rollup failed', err)
+    }
+  })
+
+  console.log('Scheduler started (30s checks, hourly reports, minute log-pattern scan, 10min retention rollups)')
 }
 
 const lastAlertCheck: Map<string, number> = new Map()

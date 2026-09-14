@@ -62,6 +62,14 @@ export async function sendEmail(to: string, message: string, status: string) {
   })
 }
 
+export async function sendSubscriberEmail(to: string, subject: string, html: string) {
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return
+  const transporter = getMailer()
+  await transporter.sendMail({
+    from: `DronWatch Status <${process.env.GMAIL_USER}>`, to, subject, html
+  })
+}
+
 async function postJson(url: string, data: any) {
   await axios.post(url, data, { timeout: 10000 })
 }

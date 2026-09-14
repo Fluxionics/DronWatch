@@ -27,11 +27,22 @@ function RequireGuest({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+function isCustomHost(): boolean {
+  const canonical = (import.meta.env.VITE_CANONICAL_HOST || '').trim().toLowerCase()
+  if (!canonical) return false
+  const host = window.location.hostname.toLowerCase()
+  return host !== canonical && host !== 'localhost' && host !== '127.0.0.1'
+}
+
+function Home() {
+  return isCustomHost() ? <PublicStatusPage /> : <Landing />
+}
+
 export default function App() {
   return (
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <Routes>
-        <Route path="/" element={<Landing />} />
+        <Route path="/" element={<Home />} />
         <Route path="/auth" element={<RequireGuest><Auth /></RequireGuest>} />
         <Route path="/status/:slug" element={<PublicStatusPage />} />
 
@@ -50,7 +61,7 @@ export default function App() {
           <Route path="/dashboard/settings" element={<Settings />} />
         </Route>
 
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={isCustomHost() ? <PublicStatusPage /> : <Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   )

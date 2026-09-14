@@ -4,6 +4,7 @@ export interface User {
   email: string | null
   password_hash: string
   free_tier: boolean
+  plan: 'free' | 'pro' | 'business' | 'enterprise'
   created_at: string
   updated_at: string
 }
@@ -26,6 +27,8 @@ export interface Monitor {
   last_check: string | null
   last_status: boolean | null
   last_latency: number | null
+  consecutive_down: number
+  consecutive_latency: number
   priority: number
   region: string
   notification_channels: NotificationChannel[]
@@ -49,7 +52,27 @@ export interface Check {
   ttfb: number | null
   is_up: boolean
   error_message: string | null
+  region: string | null
+  extra: Record<string, any> | null
   checked_at: string
+}
+
+export type AlertRuleCondition = 'down_for' | 'latency_above' | 'ssl_expires_within'
+
+export interface AlertRule {
+  id: string
+  monitor_id: string
+  user_id: string
+  name: string
+  condition: AlertRuleCondition
+  threshold: number
+  for_minutes: number
+  channels: NotificationChannel[]
+  enabled: boolean
+  consecutive: number
+  last_fired_at: string | null
+  last_ok_at: string | null
+  created_at: string
 }
 
 export interface Alert {

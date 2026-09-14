@@ -4,6 +4,7 @@ import { supabase } from '../config/supabase'
 
 export interface AuthenticatedRequest extends Request {
   user?: { id: string; email?: string }
+  agent?: { id: string; user_id: string }
 }
 
 export interface AccessTokenPayload {
@@ -12,7 +13,23 @@ export interface AccessTokenPayload {
   type: 'access'
 }
 
+function sha256(s: string): string {
+  return require('crypto').createHash('sha256').update(s).digest('hex')
+}
+
 export async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const agentToken = req.headers['x-agent-token'] as string | undefined
+  if (agentToken) {
+    const hash = sha256(agentToken)
+    const { data: agent } = await supabase.from('agents').select('id, user_id').eq('token_hash', hash).single()
+    if (!agent) {
+      return res.status(401).json({ error: 'Invalid agent token' })
+    }
+    req.user = { id: agent.user_id }
+    req.agent = { id: agent.id, user_id: agent.user_id }
+    return next()
+  }
+
   const header = req.headers.authorization
   if (!header?.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Missing authorization header' })

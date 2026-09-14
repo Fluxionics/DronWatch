@@ -13,8 +13,10 @@ import maintenanceRouter from './routes/maintenance'
 import teamsRouter from './routes/teams'
 import logsRouter from './routes/logs'
 import agentsRouter from './routes/agents'
+import alertRulesRouter from './routes/alertRules'
 import { startScheduler } from './jobs/scheduler'
 import { globalLimiter, authStrictLimiter, refreshLimiter, noStore, blockUnsafeMethods, validateOrigin } from './middleware/security'
+import { getAllowedOrigins } from './services/origins'
 
 const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'JWT_SECRET', 'JWT_REFRESH_SECRET']
 for (const key of REQUIRED_ENV) {
@@ -43,15 +45,17 @@ app.use(helmet({
 }))
 
 app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin || origin === frontendUrl) return cb(null, true)
+  origin: async (origin, cb) => {
+    if (!origin) return cb(null, true)
+    const allowed = await getAllowedOrigins(frontendUrl)
+    if (allowed.includes(origin)) return cb(null, true)
     return cb(new Error('Origin not allowed by CORS'))
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'Accept']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Agent-Token', 'Accept']
 }))
-app.use(validateOrigin([frontendUrl]))
+app.use(validateOrigin(async () => getAllowedOrigins(frontendUrl)))
 
 app.use(express.json({ limit: '1mb' }))
 app.use(express.urlencoded({ extended: false, limit: '64kb' }))
@@ -95,6 +99,7 @@ app.use('/api/maintenance', maintenanceRouter)
 app.use('/api/teams', teamsRouter)
 app.use('/api/logs', logsRouter)
 app.use('/api/agents', agentsRouter)
+app.use('/api/alert-rules', alertRulesRouter)
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' })
@@ -111,11 +116,23 @@ app.use((err: Error & { status?: number; type?: string }, _req: express.Request,
   })
 })
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`)
+export function isWorkerOnly(): boolean {
+  return process.env.WORKER_ONLY === 'true'
+}
+
+if (isWorkerOnly()) {
   if (process.env.NODE_ENV !== 'test') {
     startScheduler()
+    console.log(`Worker-only mode: scheduler running, HTTP disabled`)
   }
-})
+} else {
+  app.listen(port, () => {
+    const region = process.env.REGION || 'self'
+    console.log(`Server running on port ${port} (region: ${region})`)
+    if (process.env.NODE_ENV !== 'test') {
+      startScheduler()
+    }
+  })
+}
 
 export default app

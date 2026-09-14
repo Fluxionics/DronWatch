@@ -1,25 +1,43 @@
 import { useParams } from 'react-router-dom'
 import { useState } from 'react'
 import { formatDistanceToNow } from 'date-fns'
-import { usePublicStatusPage } from '../hooks/useStatusPages'
+import { usePublicStatusPage, usePublicStatusPageByDomain } from '../hooks/useStatusPages'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import api from '../utils/api'
 import clsx from 'clsx'
 
+function isCustomHost(): boolean {
+  const canonical = (import.meta.env.VITE_CANONICAL_HOST || '').trim().toLowerCase()
+  if (!canonical) return false
+  const host = window.location.hostname.toLowerCase()
+  return host !== canonical && host !== 'localhost' && host !== '127.0.0.1'
+}
+
+type PublicPage = any
+
 export default function PublicStatusPage() {
   const { slug } = useParams<{ slug: string }>()
-  const { data, isLoading, error } = usePublicStatusPage(slug!)
+  const customHost = isCustomHost()
+  const domain = customHost ? window.location.hostname : ''
+  const { data: slugData, isLoading: slugLoading, error: slugError } = usePublicStatusPage(slug || '')
+  const { data: domainData, isLoading: domainLoading, error: domainError } = usePublicStatusPageByDomain(domain)
+  const data: PublicPage | undefined = customHost ? domainData : slugData
+  const isLoading = customHost ? domainLoading : slugLoading
+  const error = customHost ? domainError : slugError
+
   const [email, setEmail] = useState('')
   const [subscribed, setSubscribed] = useState(false)
   const [subError, setSubError] = useState('')
-  const verified = new URLSearchParams(window.location.search).get('verified') === '1'
+  const params = new URLSearchParams(window.location.search)
+  const verified = params.get('verified') === '1'
+  const unsubscribed = params.get('unsubscribed') === '1'
   useDocumentTitle(data ? `${data.name} · DronWatch` : 'Status · DronWatch')
 
   const subscribe = async () => {
     setSubError('')
     try {
-      const { data } = await api.post(`/api/status-pages/public/${slug}/subscribe`, { email })
-      if (data.ok) setSubscribed(true)
+      const { data: res } = await api.post(`/api/status-pages/public/${data.slug}/subscribe`, { email })
+      if (res.ok) setSubscribed(true)
     } catch (err: any) {
       setSubError(err.response?.data?.error || 'Subscription failed')
     }
@@ -46,8 +64,10 @@ export default function PublicStatusPage() {
     )
   }
 
-  const allUp = data.monitors.every((m: any) => m.last_status === true)
-  const anyDown = data.monitors.some((m: any) => m.last_status === false)
+  const monitors: any[] = data.monitors || []
+  const allUp = monitors.length > 0 && monitors.every((m: any) => m.last_status === true)
+  const anyDown = monitors.some((m: any) => m.last_status === false)
+  const incidents: any[] = data.incidents || []
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: data.background_color }}>
@@ -59,7 +79,7 @@ export default function PublicStatusPage() {
           <h1 className="text-2xl font-bold text-surface-50 mb-1">{data.name}</h1>
           <div className="flex items-center gap-4 mt-2">
             <a
-              href={`/api/status-pages/feed/${slug}`}
+              href={`/api/status-pages/feed/${data.slug}`}
               className="inline-flex items-center gap-1.5 text-xs text-surface-400 hover:text-surface-200 transition-colors"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
@@ -72,8 +92,14 @@ export default function PublicStatusPage() {
         </header>
 
         {verified && (
-          <div className="rounded-xl border border-emerald-800/50 bg-emerald-900/20 px-5 py-3 mb-8 text-sm text-emerald-300">
+          <div className="rounded-xl border border-emerald-800/50 bg-emerald-900/20 px-5 py-3 mb-4 text-sm text-emerald-300">
             Email subscription verified. You will be notified when services change status.
+          </div>
+        )}
+
+        {unsubscribed && (
+          <div className="rounded-xl border border-surface-800 bg-surface-900/60 px-5 py-3 mb-4 text-sm text-surface-300">
+            You have been unsubscribed from updates for this page.
           </div>
         )}
 
@@ -118,10 +144,21 @@ export default function PublicStatusPage() {
         )}
 
         <div className="space-y-3">
-          {data.monitors.map((monitor: any) => (
+          {monitors.map((monitor: any) => (
             <MonitorRow key={monitor.id} monitor={monitor} />
           ))}
         </div>
+
+        {incidents.length > 0 && (
+          <div className="mt-8">
+            <h2 className="text-sm font-semibold text-surface-200 uppercase tracking-wide mb-3">Incident history</h2>
+            <div className="space-y-3">
+              {incidents.map(incident => (
+                <IncidentRow key={incident.id} incident={incident} />
+              ))}
+            </div>
+          </div>
+        )}
 
         {data.subscriptions_enabled && (
           <div className="mt-8 rounded-xl border border-surface-800 bg-surface-900/60 px-5 py-4">
@@ -148,8 +185,8 @@ export default function PublicStatusPage() {
 
         <footer className="mt-12 text-xs text-surface-600 flex items-center justify-between">
           <span>
-            Updated {data.monitors[0]?.last_check
-              ? formatDistanceToNow(new Date(data.monitors[0].last_check), { addSuffix: true })
+            Updated {monitors[0]?.last_check
+              ? formatDistanceToNow(new Date(monitors[0].last_check), { addSuffix: true })
               : 'never'}
           </span>
           {data.branding_default && (
@@ -208,6 +245,60 @@ function MonitorRow({ monitor }: { monitor: any }) {
             />
           ))}
         </div>
+      )}
+    </div>
+  )
+}
+
+function incidentLabel(incident: any): { text: string; tone: string } {
+  const updates = (incident.incident_updates || [])
+    .filter((u: any) => u.visibility !== 'internal')
+    .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  const status = updates[0]?.status || (incident.status === 'resolved' ? 'resolved' : 'investigating')
+  const map: Record<string, { text: string; tone: string }> = {
+    investigating: { text: 'Investigating', tone: 'bg-amber-500' },
+    identified: { text: 'Identified', tone: 'bg-orange-500' },
+    monitoring: { text: 'Monitoring', tone: 'bg-sky-500' },
+    resolved: { text: 'Resolved', tone: 'bg-emerald-500' },
+    maintenance: { text: 'Maintenance', tone: 'bg-purple-500' },
+    acknowledged: { text: 'Acknowledged', tone: 'bg-orange-500' },
+    open: { text: 'Investigating', tone: 'bg-amber-500' },
+    closed: { text: 'Resolved', tone: 'bg-emerald-500' }
+  }
+  return map[status] || { text: status, tone: 'bg-surface-500' }
+}
+
+function IncidentRow({ incident }: { incident: any }) {
+  const label = incidentLabel(incident)
+  const latest = (incident.incident_updates || [])
+    .filter((u: any) => u.visibility !== 'internal')
+    .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+  const resolved = incident.status === 'resolved'
+  const by = formatDistanceToNow(new Date(latest?.created_at || incident.started_at), { addSuffix: true })
+
+  return (
+    <div className="rounded-xl border border-surface-800 bg-surface-900/60 px-5 py-4">
+      <div className="flex items-center gap-3 mb-1">
+        <span className={clsx('w-2 h-2 rounded-full shrink-0', label.tone)} />
+        <h3 className="font-medium text-surface-100 flex-1">{incident.title}</h3>
+        <span className={clsx(
+          'inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border',
+          resolved
+            ? 'border-emerald-600/40 bg-emerald-600/10 text-emerald-300'
+            : 'border-amber-600/40 bg-amber-600/10 text-amber-300'
+        )}>
+          {label.text}
+        </span>
+      </div>
+      <p className="text-xs text-surface-500 pl-5">
+        Started {formatDistanceToNow(new Date(incident.started_at), { addSuffix: true })}
+        {resolved && incident.resolved_at && (
+          <> · Resolved {formatDistanceToNow(new Date(incident.resolved_at), { addSuffix: true })}</>
+        )}
+        {latest && ` · Updated ${by}`}
+      </p>
+      {latest && (
+        <p className="text-sm text-surface-300 pl-5 mt-2">{latest.message}</p>
       )}
     </div>
   )

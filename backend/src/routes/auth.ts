@@ -110,7 +110,7 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
   const { data: user, error } = await supabase
     .from('users')
     .insert({ username, password_hash, ...(email ? { email } : {}) })
-    .select('id, username, email, free_tier, created_at')
+    .select('id, username, email, free_tier, plan, created_at')
     .single()
 
   if (error) {
@@ -132,7 +132,7 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response)
 
   const { data: user } = await supabase
     .from('users')
-    .select('id, username, email, password_hash, free_tier')
+    .select('id, username, email, password_hash, free_tier, plan')
     .eq('username', username)
     .single()
 

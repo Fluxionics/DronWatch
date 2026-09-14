@@ -6,6 +6,7 @@ import { supabase } from '../config/supabase'
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
 import { validate } from '../middleware/validate'
 import { PASSWORD_POLICY } from './auth'
+import { PLAN_LIMITS, PLAN_NAMES } from '../services/plans'
 
 const router = Router()
 
@@ -35,6 +36,10 @@ const reportSchema = z.object({
   days: z.number().int().min(1).max(365).default(30)
 })
 
+const planSchema = z.object({
+  plan: z.enum(PLAN_NAMES)
+})
+
 async function revokeAllSessions(userId: string) {
   await supabase.from('user_sessions').update({ revoked_at: new Date().toISOString() }).eq('user_id', userId).is('revoked_at', null)
 }
@@ -42,7 +47,7 @@ async function revokeAllSessions(userId: string) {
 router.get('/profile', async (req: AuthenticatedRequest, res: Response) => {
   const { data, error } = await supabase
     .from('users')
-    .select('id, username, email, free_tier, created_at')
+    .select('id, username, email, free_tier, plan, created_at')
     .eq('id', req.user!.id)
     .single()
 
@@ -55,7 +60,23 @@ router.put('/profile', validate(profileSchema), async (req: AuthenticatedRequest
     .from('users')
     .update({ username: req.body.username })
     .eq('id', req.user!.id)
-    .select('id, username, email, free_tier, created_at')
+    .select('id, username, email, free_tier, plan, created_at')
+    .single()
+
+  if (error) return res.status(500).json({ error: error.message })
+  res.json(data)
+})
+
+router.get('/plans', async (_req: AuthenticatedRequest, res: Response) => {
+  res.json(PLAN_NAMES.map(p => ({ name: p, limits: PLAN_LIMITS[p] })))
+})
+
+router.put('/plan', validate(planSchema), async (req: AuthenticatedRequest, res: Response) => {
+  const { data, error } = await supabase
+    .from('users')
+    .update({ plan: req.body.plan })
+    .eq('id', req.user!.id)
+    .select('id, plan')
     .single()
 
   if (error) return res.status(500).json({ error: error.message })

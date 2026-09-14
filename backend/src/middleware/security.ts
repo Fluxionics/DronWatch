@@ -45,11 +45,14 @@ export function safeEquals(a: string, b: string): boolean {
   return timingSafeEqual(ha, hb)
 }
 
-export function validateOrigin(allowedOrigins: string[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
+export function validateOrigin(resolver: string[] | (() => string[] | Promise<string[]>)) {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const origin = req.headers.origin
-    if (origin && allowedOrigins.length > 0 && !allowedOrigins.includes(origin)) {
-      return res.status(403).json({ error: 'Origin not allowed' })
+    if (origin) {
+      const allowed = typeof resolver === 'function' ? await resolver() : resolver
+      if (allowed.length > 0 && !allowed.includes(origin)) {
+        return res.status(403).json({ error: 'Origin not allowed' })
+      }
     }
     next()
   }

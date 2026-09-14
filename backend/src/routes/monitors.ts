@@ -3,8 +3,9 @@ import { z } from 'zod'
 import { supabase } from '../config/supabase'
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
 import { validate } from '../middleware/validate'
-import { checkMonitor, getMonitorStats, getDowntimeEvents, getMonitorReport } from '../services/monitorService'
+import { checkMonitor, getMonitorStats, getDowntimeEvents, getMonitorReport, getMonitorRegions } from '../services/monitorService'
 import { safeEquals } from '../middleware/security'
+import { assertResourceLimit, enforceInterval, getUserPlan } from '../services/plans'
 
 const router = Router()
 
@@ -75,9 +76,13 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
 })
 
 router.post('/', validate(monitorSchema), async (req: AuthenticatedRequest, res: Response) => {
+  const limit = await assertResourceLimit(req.user!.id, 'monitors')
+  if (!limit.ok) return res.status(402).json({ error: limit.error })
+  const plan = await getUserPlan(req.user!.id)
+  const body = { ...req.body, check_interval: enforceInterval(plan, req.body.check_interval) }
   const { data, error } = await supabase
     .from('monitors')
-    .insert({ ...req.body, user_id: req.user!.id })
+    .insert({ ...body, user_id: req.user!.id })
     .select()
     .single()
 
@@ -98,9 +103,11 @@ router.get('/:id', async (req: AuthenticatedRequest, res: Response) => {
 })
 
 router.put('/:id', validate(monitorSchema), async (req: AuthenticatedRequest, res: Response) => {
+  const plan = await getUserPlan(req.user!.id)
+  const body = { ...req.body, check_interval: enforceInterval(plan, req.body.check_interval) }
   const { data, error } = await supabase
     .from('monitors')
-    .update(req.body)
+    .update(body)
     .eq('id', req.params.id)
     .eq('user_id', req.user!.id)
     .select()
@@ -220,6 +227,13 @@ router.get('/:id/report', async (req: AuthenticatedRequest, res: Response) => {
   if (!monitor) return res.status(404).json({ error: 'Monitor not found' })
   const report = await getMonitorReport(req.params.id)
   res.json(report)
+})
+
+router.get('/:id/regions', async (req: AuthenticatedRequest, res: Response) => {
+  const { data: monitor } = await supabase.from('monitors').select('id').eq('id', req.params.id).eq('user_id', req.user!.id).single()
+  if (!monitor) return res.status(404).json({ error: 'Monitor not found' })
+  const regions = await getMonitorRegions(req.params.id)
+  res.json(regions)
 })
 
 router.get('/:id/report.csv', async (req: AuthenticatedRequest, res: Response) => {

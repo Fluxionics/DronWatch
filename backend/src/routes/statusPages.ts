@@ -6,6 +6,7 @@ import { supabase } from '../config/supabase'
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth'
 import { validate } from '../middleware/validate'
 import { authStrictLimiter } from '../middleware/security'
+import { assertResourceLimit } from '../services/plans'
 
 const router = Router()
 
@@ -76,20 +77,21 @@ router.get('/public/:slug/verify', async (req: Request, res: Response) => {
   res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/status/${req.params.slug}?verified=1`)
 })
 
-router.get('/public/:slug', async (req: Request, res: Response) => {
-  const { data: page } = await supabase
-    .from('status_pages')
-    .select('*')
-    .eq('slug', req.params.slug)
-    .single()
+router.get('/public/:slug/unsubscribe', async (req: Request, res: Response) => {
+  await supabase.from('status_page_subscribers').delete().eq('token', String(req.query.token || ''))
+  res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/status/${req.params.slug}?unsubscribed=1`)
+})
 
-  if (!page) return res.status(404).json({ error: 'Status page not found' })
+async function buildPublicPayload(page: any, res: Response, pwd?: string): Promise<void> {
   if (!page.is_public) {
-    const pwd = req.query.password as string | undefined
     if (page.password_hash) {
-      if (!pwd || !(await bcrypt.compare(pwd, page.password_hash))) return res.status(401).json({ error: 'Password required' })
+      if (!pwd || !(await bcrypt.compare(pwd, page.password_hash))) {
+        res.status(401).json({ error: 'Password required' })
+        return
+      }
     } else {
-      return res.status(403).json({ error: 'Private status page' })
+      res.status(403).json({ error: 'Private status page' })
+      return
     }
   }
 
@@ -97,7 +99,7 @@ router.get('/public/:slug', async (req: Request, res: Response) => {
 
   const { data: monitors } = await supabase
     .from('monitors')
-    .select('id, name, url, last_status, last_check')
+    .select('id, name, url, last_status, last_check, region')
     .in('id', monitorIds.length > 0 ? monitorIds : ['00000000-0000-0000-0000-000000000000'])
 
   const monitorData = await Promise.all(
@@ -112,6 +114,29 @@ router.get('/public/:slug', async (req: Request, res: Response) => {
   const { data: incidents } = await supabase.from('incidents').select('*, incident_updates(*)').in('monitor_id', monitorIds.length ? monitorIds : ['00000000-0000-0000-0000-000000000000']).order('started_at', { ascending: false }).limit(20)
   const { data: maintenance } = await supabase.from('maintenance_windows').select('*').gte('ends_at', new Date().toISOString()).order('starts_at', { ascending: true }).limit(10)
   res.json({ ...page, monitors: monitorData, incidents: incidents || [], maintenance: maintenance || [] })
+}
+
+router.get('/public/:slug', async (req: Request, res: Response) => {
+  const { data: page } = await supabase
+    .from('status_pages')
+    .select('*')
+    .eq('slug', req.params.slug)
+    .single()
+
+  if (!page) return res.status(404).json({ error: 'Status page not found' })
+  await buildPublicPayload(page, res, String(req.query.password || ''))
+})
+
+router.get('/domain/:domain', async (req: Request, res: Response) => {
+  const domain = String(req.params.domain || '').trim().toLowerCase()
+  const { data: page } = await supabase
+    .from('status_pages')
+    .select('*')
+    .eq('custom_domain', domain)
+    .single()
+
+  if (!page) return res.status(404).json({ error: 'Status page not found' })
+  await buildPublicPayload(page, res, String(req.query.password || ''))
 })
 
 router.use(requireAuth)
@@ -128,6 +153,8 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
 })
 
 router.post('/', validate(statusPageSchema), async (req: AuthenticatedRequest, res: Response) => {
+  const limit = await assertResourceLimit(req.user!.id, 'status_pages')
+  if (!limit.ok) return res.status(402).json({ error: limit.error })
   const body: any = { ...req.body }
   if (body.password) { body.password_hash = await bcrypt.hash(body.password, 10); delete body.password }
   const { data, error } = await supabase.from('status_pages').insert({ ...body, user_id: req.user!.id }).select().single()
