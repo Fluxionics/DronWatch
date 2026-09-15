@@ -1,121 +1,620 @@
 # DronWatch
 
-Free, open-source uptime monitoring and status pages. Monitors, alert rules, incidents,
-status pages, agents and a REST API — self-hostable in minutes.
+Free and open-source uptime monitoring with status pages, alerts, incidents, agents, and a REST API.
+
+DronWatch is designed as a self-hostable alternative to traditional uptime monitoring platforms. It provides website and service monitoring, configurable alerts, incident management, public status pages, infrastructure agents, and API access from a single platform.
+
+---
 
 ## Features
 
-- **Monitors**: HTTP(S), keyword, ping, TCP, DNS, SSL, domain expiry and heartbeat checks,
-  with per-stage timings (DNS → TCP → TLS → TTFB → total), retries with exponential
-  backoff, circuit breaker, maintenance windows, priorities and region labels.
-- **Alerts**: 19 channels (email, Slack, Discord, webhook, Telegram, Teams, Google Chat,
-  Pushover, Gotify, Mattermost, Matrix, PagerDuty, Opsgenie, Twilio SMS, Jira, Linear,
-  GitHub/GitLab issues, web push), alert rules (`down_for`, `latency_above`,
-  `ssl_expires_within`), one-click channel testing, delivery states and automatic retries.
-- **Incidents**: open → acknowledged → resolving → resolved lifecycle, public/internal
-  updates, tasks and postmortems.
-- **Status pages**: public, private or password-protected, custom domains, groups,
-  email subscriptions with double opt-in, RSS feed, incident and maintenance display.
-- **Agents**: lightweight Node script reporting CPU, memory, disk, load, processes and
-  network; heartbeat history per agent.
-- **Plans & limits**: free/pro/business/enterprise tiers with monitor, interval,
-  status-page, agent and history limits enforced by the API.
-- **Retention**: raw checks roll up into hourly then daily aggregates (weighted averages),
-  with per-plan history windows.
-- **API**: REST API with JWT sessions, API keys with granular scopes, and agent tokens
-  restricted to agent endpoints.
+### Monitors
 
-## Architecture
+DronWatch supports multiple monitoring methods:
 
-```
-Browser (Vite SPA) ──HTTPS──> API (Express + node-cron) ──> Supabase (PostgreSQL)
-                                    │                              ▲
-Agents (Node script) ──heartbeat─── │                              │
-                                                checks/alerts/incidents/status data
+* HTTP / HTTPS
+* Keyword monitoring
+* Ping
+* TCP
+* DNS
+* SSL certificate monitoring
+* Domain expiration monitoring
+* Heartbeat monitoring
+
+Each check can provide detailed timing information:
+
+```text
+DNS → TCP → TLS → TTFB → Total
 ```
 
-The API process also runs the scheduler (checks, reports, alert retries, retention
-rollups). For multi-instance setups, checks are claimed atomically in the database so
-two workers never run the same check.
+Monitoring also includes:
 
-## Quickstart (local)
+* Exponential-backoff retries
+* Circuit breakers
+* Maintenance windows
+* Monitor priorities
+* Region labels
+* Check history
+* Availability and latency tracking
 
-Requirements: Node.js 22+, a Supabase project.
+---
+
+## Alerts
+
+DronWatch supports multiple notification channels so you can choose where monitoring events should be delivered.
+
+### Supported channels
+
+* Email
+* Slack
+* Discord
+* Webhooks
+* Telegram
+* Microsoft Teams
+* Google Chat
+* Pushover
+* Gotify
+* Mattermost
+* Matrix
+* PagerDuty
+* Opsgenie
+* Twilio SMS
+* Jira
+* Linear
+* GitHub Issues
+* GitLab Issues
+* Web Push
+
+Alert rules currently include:
+
+```text
+down_for
+latency_above
+ssl_expires_within
+```
+
+Alerts also support:
+
+* Channel testing
+* Delivery states
+* Automatic retries
+* Delivery tracking
+
+---
+
+## Incidents
+
+DronWatch includes a complete incident lifecycle:
+
+```text
+OPEN
+  ↓
+ACKNOWLEDGED
+  ↓
+RESOLVING
+  ↓
+RESOLVED
+```
+
+Incidents can include:
+
+* Public updates
+* Internal updates
+* Incident tasks
+* Postmortems
+* Resolution tracking
+
+This allows teams to keep a clear history of what happened and how an issue was handled.
+
+---
+
+## Status Pages
+
+Create public or private status pages for your services.
+
+Supported options include:
+
+* Public status pages
+* Private status pages
+* Password-protected pages
+* Custom domains
+* Email subscriptions
+* Double opt-in subscriptions
+* RSS feeds
+* Incident display
+* Maintenance display
+
+Status pages can be used to communicate service availability without exposing the internal monitoring dashboard.
+
+---
+
+## Agents
+
+DronWatch also supports lightweight monitoring agents.
+
+The agent can report system information such as:
+
+* CPU usage
+* Memory usage
+* Disk usage
+* System load
+* Processes
+* Network information
+
+Agents send heartbeat data back to the DronWatch API, allowing infrastructure health to be monitored alongside external services.
+
+---
+
+## Plans and Limits
+
+DronWatch includes plan-based limits enforced by the API.
+
+Available plan levels:
+
+| Plan       | Purpose                          |
+| ---------- | -------------------------------- |
+| Free       | Basic monitoring                 |
+| Pro        | Extended monitoring capabilities |
+| Business   | Larger monitoring environments   |
+| Enterprise | Advanced deployments             |
+
+Limits can apply to:
+
+* Number of monitors
+* Monitoring intervals
+* Status pages
+* Agents
+* Historical data
+
+The API is responsible for enforcing these limits.
+
+---
+
+## Data Retention
+
+DronWatch uses a retention and aggregation system to avoid keeping every raw check indefinitely.
+
+Monitoring data can be rolled up into:
+
+```text
+Raw checks
+    ↓
+Hourly aggregates
+    ↓
+Daily aggregates
+```
+
+Historical retention depends on the configured plan limits.
+
+Aggregated data can use weighted averages to preserve meaningful monitoring statistics while reducing long-term storage requirements.
+
+---
+
+## REST API
+
+DronWatch provides a REST API for interacting with the monitoring platform.
+
+Authentication supports:
+
+* JWT sessions
+* Scoped API keys
+* Agent tokens
+
+Agent tokens are restricted to agent-related endpoints.
+
+The API can be used by external applications, scripts, integrations, and automation systems.
+
+---
+
+# Architecture
+
+DronWatch is structured around a frontend, API, database, and monitoring workers.
+
+```text
+┌──────────────────────────┐
+│        Vite SPA          │
+│       Frontend            │
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│     Express API          │
+│      + node-cron         │
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│   Supabase PostgreSQL    │
+└──────────────────────────┘
+
+             ▲
+             │
+┌────────────┴─────────────┐
+│        Agents            │
+│      Heartbeats          │
+└──────────────────────────┘
+```
+
+The scheduler is responsible for monitoring jobs, reports, retries, and retention tasks.
+
+For multi-instance deployments, database-level atomic claiming is used to prevent the same monitoring job from being processed multiple times.
+
+---
+
+# Tech Stack
+
+## Frontend
+
+* Vite
+* SPA architecture
+
+## Backend
+
+* Node.js
+* Express
+* node-cron
+
+## Database
+
+* Supabase
+* PostgreSQL
+
+## Deployment
+
+* Vercel
+* Render
+* GitHub Actions
+
+---
+
+# Requirements
+
+Before installing DronWatch, make sure you have:
+
+* Node.js 22+
+* A Supabase project
+* Git
+* A GitHub account if you plan to use GitHub Actions
+
+---
+
+# Quick Start
+
+Clone the repository:
 
 ```bash
 git clone https://github.com/Fluxionics/DronWatch.git
 cd DronWatch
-cd backend && npm install
-cd ../frontend && npm install
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
 ```
 
-1. In Supabase → SQL Editor, run `backend/src/db/schema.sql`, then every file in
-   `backend/src/db/migrations/` in filename order.
-2. Fill in `backend/.env` (see reference below) and `frontend/.env`
-   (`VITE_API_URL=http://localhost:3000`).
-3. Run:
+Install backend dependencies:
 
 ```bash
-cd backend && npm run dev    # http://localhost:3000
-cd frontend && npm run dev   # http://localhost:5173
+cd backend
+npm install
 ```
 
-## Production deploy (Render + Vercel)
+Install frontend dependencies:
 
-- **Backend → Render**: New → Blueprint using `render.yaml` (root `backend`,
-  build `npm ci && npm run build`, start `npm run start`, health `/api/health`),
-  or a manual Web Service with the same commands. Set the backend env vars below.
-  Note: Render's free tier sleeps after 15 idle minutes — for real monitoring either
-  use a paid instance or keep it awake by pinging `/api/health` every few minutes
-  (e.g. cron-job.org or UptimeRobot free).
-- **Frontend → Vercel**: import the repo with Root Directory `frontend`
-  (framework: Vite). Build env: `VITE_API_URL=https://<your-api>.onrender.com`
-  (no trailing `/api`) and optionally `VITE_CANONICAL_HOST=https://<your-app>.vercel.app`.
-- **CI (optional)**: GitHub Actions deploys the backend to Render via deploy hook
-  (`RENDER_DEPLOY_HOOK` secret) and the frontend to Vercel
-  (`VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `VITE_API_URL` secrets).
+```bash
+cd ../frontend
+npm install
+```
 
-### Backend env reference
+---
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `SUPABASE_URL` | yes | Supabase project URL |
-| `SUPABASE_SERVICE_KEY` | yes | Service-role key (server only, never expose) |
-| `JWT_SECRET` / `JWT_REFRESH_SECRET` | yes | Long random strings (`openssl rand -hex 64`) |
-| `JWT_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` | no | Defaults `15m` / `7d` |
-| `FRONTEND_URL` | yes | Public frontend URL (CORS + email links) |
-| `GMAIL_USER` / `GMAIL_APP_PASSWORD` | for email | Gmail address + 16-char app password (not your login password) |
-| `NODE_ENV` | no | `production` in prod |
-| `TRUST_PROXY` | behind proxy | e.g. `1`, so rate limits see real IPs |
-| `REGION` | no | Region label for checks (default `self`) |
-| `WORKER_ONLY` | no | `true` runs scheduler without HTTP (extra workers) |
-| `CHECK_RETENTION_DAYS` / `HOURLY_RETENTION_DAYS` / `DAILY_RETENTION_DAYS` | no | Defaults `7` / `90` / `730` |
-| `CHECK_CONCURRENCY` | no | Max parallel checks (default `10`) |
-| `CIRCUIT_BREAKER_FAILURES` / `CIRCUIT_BREAKER_COOLDOWN_MS` | no | Defaults `5` / `300000` |
-| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | for SMS | Twilio credentials |
+## Database Setup
 
-### Frontend env reference
+Create a Supabase project and configure the database.
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `VITE_API_URL` | yes | Backend base URL, **without** `/api` |
-| `VITE_CANONICAL_HOST` | no | Frontend host for custom-domain status pages |
+Run the main schema:
 
-## Usage
+```text
+schema.sql
+```
 
-Full step-by-step guide: [docs/USAGE.md](docs/USAGE.md) — monitors, all 19 alert
-channel formats, alert rules, incidents, status pages, agents, API keys and scopes,
-reports, troubleshooting.
+Then apply the available migrations.
 
-## Security & policies
+---
 
-- [SECURITY.md](SECURITY.md) — vulnerability reporting, secrets handling, defenses.
-- [PRIVACY.md](PRIVACY.md) — what data is stored, retention, your rights.
-- Never commit `.env` files or paste tokens/keys into issues, PRs or chats. If a
-  secret leaks, rotate it immediately.
+## Environment Variables
 
-## License
+### Backend
 
-MIT
+Configure the required backend environment variables:
+
+```env
+SUPABASE_URL=
+SUPABASE_SERVICE_KEY=
+
+JWT_SECRET=
+JWT_REFRESH_SECRET=
+
+FRONTEND_URL=
+
+NODE_ENV=
+TRUST_PROXY=
+
+REGION=
+WORKER_ONLY=
+
+RETENTION_DAYS=
+CONCURRENCY=
+
+CIRCUIT_BREAKER_FAILURE_THRESHOLD=
+CIRCUIT_BREAKER_RESET_MS=
+
+GMAIL_USER=
+GMAIL_APP_PASSWORD=
+
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_FROM=
+```
+
+Only configure the notification provider credentials that your deployment actually uses.
+
+---
+
+### Frontend
+
+Create the frontend environment configuration:
+
+```env
+VITE_API_URL=
+VITE_CANONICAL_HOST=
+```
+
+---
+
+# Running Locally
+
+Start the backend:
+
+```bash
+cd backend
+npm run dev
+```
+
+The API runs on:
+
+```text
+http://localhost:3000
+```
+
+Start the frontend:
+
+```bash
+cd frontend
+npm run dev
+```
+
+The Vite development server runs on:
+
+```text
+http://localhost:5173
+```
+
+---
+
+# Production Deployment
+
+## Backend — Render
+
+The backend includes a `render.yaml` configuration.
+
+The deployment uses the backend directory as the root.
+
+Build command:
+
+```bash
+npm ci && npm run build
+```
+
+Start command:
+
+```bash
+npm run start
+```
+
+Health endpoint:
+
+```text
+/api/health
+```
+
+---
+
+## Frontend — Vercel
+
+Deploy the `frontend` directory as a Vite application.
+
+Configure:
+
+```env
+VITE_API_URL=
+VITE_CANONICAL_HOST=
+```
+
+The frontend communicates with the deployed DronWatch API.
+
+---
+
+## GitHub Actions
+
+GitHub Actions can also be used for deployment through deployment hooks.
+
+This allows deployments to be triggered automatically as part of a repository workflow.
+
+---
+
+# Documentation
+
+More detailed usage information is available in:
+
+```text
+docs/USAGE.md
+```
+
+The documentation covers:
+
+* Creating monitors
+* Monitor configuration
+* Alert channels
+* Alert rules
+* Incidents
+* Status pages
+* Agents
+* API keys
+* API scopes
+* Reports
+* Troubleshooting
+
+---
+
+# Security
+
+Security is an important part of the project.
+
+DronWatch includes protections such as:
+
+* JWT-based authentication
+* Scoped API keys
+* Restricted agent tokens
+* Environment-based secrets
+* Database-level job claiming
+* Monitoring retry controls
+* Circuit breakers
+* Plan-based API limits
+
+Never commit secrets or production credentials to the repository.
+
+Keep environment variables outside the source code.
+
+---
+
+# Project Structure
+
+A simplified structure looks like this:
+
+```text
+DronWatch/
+│
+├── backend/
+│   ├── ...
+│   └── package.json
+│
+├── frontend/
+│   ├── ...
+│   └── package.json
+│
+├── docs/
+│   └── USAGE.md
+│
+├── schema.sql
+├── render.yaml
+├── SECURITY.md
+├── PRIVACY.md
+└── README.md
+```
+
+---
+
+# Monitoring Flow
+
+A typical monitoring cycle looks like this:
+
+```text
+Monitor
+   ↓
+Scheduler
+   ↓
+Check
+   ↓
+Retry if necessary
+   ↓
+Circuit breaker evaluation
+   ↓
+Result
+   ↓
+Store check data
+   ↓
+Evaluate alert rules
+   ↓
+Send notifications
+```
+
+For incidents:
+
+```text
+Service failure
+      ↓
+Alert rule triggered
+      ↓
+Incident opened
+      ↓
+Notification sent
+      ↓
+Incident acknowledged
+      ↓
+Service recovery
+      ↓
+Incident resolved
+```
+
+---
+
+# Why DronWatch?
+
+DronWatch is built around a simple idea:
+
+```text
+Monitor your services.
+Know when something breaks.
+Understand what happened.
+Let your users know.
+```
+
+The goal is to keep uptime monitoring accessible while providing the infrastructure needed for more advanced deployments.
+
+It can be self-hosted, extended through the REST API, and integrated with external notification and development tools.
+
+---
+
+# License
+
+DronWatch is released under the MIT License.
+
+See:
+
+```text
+LICENSE
+```
+
+for the complete license text.
+
+---
+
+# Contributing
+
+Contributions, bug reports, improvements, and ideas are welcome.
+
+Before opening a pull request:
+
+1. Make sure the project builds correctly.
+2. Test the affected functionality.
+3. Keep changes focused.
+4. Update the documentation when necessary.
+5. Avoid committing secrets or environment files.
+
+---
+
+<div align="center">
+
+### DronWatch
+
+Open-source uptime monitoring built for people who want control over their monitoring stack.
+
+**Monitor. Detect. Respond.**
+
+</div>
